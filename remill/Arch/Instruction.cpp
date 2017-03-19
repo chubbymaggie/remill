@@ -6,6 +6,7 @@
 
 #include "remill/Arch/Arch.h"
 #include "remill/Arch/Instruction.h"
+#include "remill/Arch/Name.h"
 
 namespace remill {
 
@@ -75,8 +76,8 @@ std::string Operand::Debug(void) const {
           ss << std::dec << (size / 8) << "_BYTES"; break;
       }
 
-      if (!addr.segment_reg.name.empty()) {
-        ss << " (SEGMENT " << addr.segment_reg.name << ")";
+      if (!addr.segment_base_reg.name.empty()) {
+        ss << " (SEGMENT " << addr.segment_base_reg.name << ")";
       }
 
       ss << " " << addr.base_reg.name;

@@ -1,79 +1,103 @@
 /* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
 
-#if APPLE_SAFE_TESTS
+TEST_BEGIN_64(CVTTPS2DQv128m128, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-TEST_BEGIN(CVTTPS2DQv128m128_0, 1)
-TEST_INPUTS(0)
-    cvttps2dq xmm0, XMMWORD PTR [rsp - 16]
-TEST_END
+    push ARG1_64
+    push ARG2_64
+    cvttps2dq xmm0, XMMWORD PTR [rsp]
+TEST_END_64
 
-TEST_BEGIN(CVTTPS2DQv128m128_4, 1)
-TEST_INPUTS(0)
-    cvttps2dq xmm4, XMMWORD PTR [rsp - 16]
-TEST_END
+TEST_BEGIN_64(CVTTPS2DQv128v128, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-#endif  // APPLE_SAFE_TESTS
-
-TEST_BEGIN(CVTTPS2DQv128v128_0, 1)
-TEST_INPUTS(0)
+    push ARG1_64
+    push ARG2_64
+    movdqu xmm4, [rsp]
     cvttps2dq xmm0, xmm4
-TEST_END
-
-TEST_BEGIN(CVTTPS2DQv128v128_4, 1)
-TEST_INPUTS(0)
-    cvttps2dq xmm4, xmm0
-TEST_END
+TEST_END_64
 
 #if HAS_FEATURE_AVX
 
-#if APPLE_SAFE_TESTS
+TEST_BEGIN_64(VCVTTPS2DQv128m128, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-TEST_BEGIN(VCVTTPS2DQv128m128_0, 1)
-TEST_INPUTS(0)
-    // vcvttps2dq xmm0, XMMWORD PTR [rsp - 16]
-    .byte 0xc5, 0xfa, 0x5b, 0x44, 0x24, 0xf0
-TEST_END
+    push ARG1_64
+    push ARG2_64
+    vcvttps2dq xmm0, XMMWORD PTR [rsp]
+TEST_END_64
 
-TEST_BEGIN(VCVTTPS2DQv128m128_4, 1)
-TEST_INPUTS(0)
-    // vcvttps2dq xmm4, XMMWORD PTR [rsp - 16]
-    .byte 0xc5, 0xfa, 0x5b, 0x64, 0x24, 0xf0
-TEST_END
+TEST_BEGIN_64(VCVTTPS2DQv128v128, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-#endif  // APPLE_SAFE_TESTS
-
-TEST_BEGIN(VCVTTPS2DQv128v128_0, 1)
-TEST_INPUTS(0)
+    push ARG1_64
+    push ARG2_64
+    movdqu xmm4, XMMWORD PTR [rsp]
     vcvttps2dq xmm0, xmm4
-TEST_END
+TEST_END_64
 
-TEST_BEGIN(VCVTTPS2DQv128v128_4, 1)
-TEST_INPUTS(0)
-    vcvttps2dq xmm4, xmm0
-TEST_END
 
-#if APPLE_SAFE_TESTS
+TEST_BEGIN_64(VCVTTPS2DQv256m256, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-TEST_BEGIN(VCVTTPS2DQv256m256_0, 1)
-TEST_INPUTS(0)
-    vcvttps2dq ymm0, YMMWORD PTR [rsp - 32]
-TEST_END
+    push ARG1_64
+    push ARG2_64
+    push ARG1_64
+    push ARG2_64
+    vcvttps2dq ymm0, YMMWORD PTR [rsp]
+TEST_END_64
 
-TEST_BEGIN(VCVTTPS2DQv256m256_1, 1)
-TEST_INPUTS(0)
-    vcvttps2dq ymm4, YMMWORD PTR [rsp - 32]
-TEST_END
+TEST_BEGIN_64(VCVTTPS2DQv256v256, 2)
+TEST_INPUTS(
+    0x7f7fffff00800000,  // std::numeric_limits<double>::min(), max
+    0x0080000000000000,  // std::numeric_limits<double>::max(), 0
+    0x000000003f000000,  // 0, 0.5
+    0x3f000000bf000000,  // 0.5, -0.5
+    0xbf0000003f800000,  // -0.5, 1.0
+    0x3f800000bf800000,  // 1.0, -1.0
+    0xbff0000047c34fc0)  // -1.0, 99999.5
 
-#endif  // APPLE_SAFE_TESTS
-
-TEST_BEGIN(VCVTTPS2DQv256v256_0, 1)
-TEST_INPUTS(0)
+    push ARG1_64
+    push ARG2_64
+    push ARG1_64
+    push ARG2_64
+    vmovdqu ymm4, YMMWORD PTR [rsp]
     vcvttps2dq ymm0, ymm4
-TEST_END
-
-TEST_BEGIN(VCVTTPS2DQv256v256_4, 1)
-TEST_INPUTS(0)
-    vcvttps2dq ymm4, ymm0
-TEST_END
+TEST_END_64
 
 #endif  // HAS_FEATURE_AVX

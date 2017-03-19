@@ -14,6 +14,29 @@ uint128_t __remill_read_memory_128(Memory *mem, addr_t addr);
 ALWAYS_INLINE static
 Memory *__remill_write_memory_128(Memory *mem, addr_t addr, uint128_t val);
 
+#define MAKE_UNDEF(n) \
+  ALWAYS_INLINE static uint ## n ## _t Undefined(uint ## n ## _t) { \
+    return __remill_undefined_ ## n (); \
+  } \
+  ALWAYS_INLINE static uint ## n ## _t Undefined(Rn<uint ## n ## _t>) { \
+    return __remill_undefined_ ## n (); \
+  } \
+  ALWAYS_INLINE static uint ## n ## _t Undefined(RnW<uint ## n ## _t>) { \
+    return __remill_undefined_ ## n (); \
+  } \
+  ALWAYS_INLINE static uint ## n ## _t Undefined(Mn<uint ## n ## _t>) { \
+    return __remill_undefined_ ## n (); \
+  } \
+  ALWAYS_INLINE static uint ## n ## _t Undefined(MnW<uint ## n ## _t>) { \
+    return __remill_undefined_ ## n (); \
+  }
+
+MAKE_UNDEF(8)
+MAKE_UNDEF(16)
+MAKE_UNDEF(32)
+MAKE_UNDEF(64)
+
+#undef MAKE_UNDEF
 
 #define MAKE_SIGNED_MEM_ACCESS(size) \
     ALWAYS_INLINE static \
@@ -102,6 +125,7 @@ MAKE_MREAD(8, 8, uint, 8)
 MAKE_MREAD(16, 16, uint, 16)
 MAKE_MREAD(32, 32, uint, 32)
 MAKE_MREAD(64, 64, uint, 64)
+MAKE_MREAD(128, 128, uint, 128)
 
 MAKE_MREAD(32, 32, float, f32)
 MAKE_MREAD(64, 64, float, f64)
@@ -149,6 +173,7 @@ MAKE_MWRITE(8, 8, uint, uint, 8)
 MAKE_MWRITE(16, 16, uint, uint, 16)
 MAKE_MWRITE(32, 32, uint, uint, 32)
 MAKE_MWRITE(64, 64, uint, uint, 64)
+MAKE_MWRITE(128, 128, uint, uint, 128)
 
 MAKE_MWRITE(32, 32, float, float, f32)
 MAKE_MWRITE(64, 64, float, float, f64)
@@ -161,7 +186,7 @@ MAKE_MWRITE(80, 64, float, float, f80)
     ALWAYS_INLINE static \
     auto _ ## prefix ## ReadV ## size( \
         Memory *, RVnW<T> vec) -> decltype(T().accessor) { \
-      return reinterpret_cast<T *>(vec.val_ref)->accessor.elems; \
+      return reinterpret_cast<T *>(vec.val_ref)->accessor; \
     } \
     \
     template <typename T> \
@@ -223,11 +248,12 @@ MAKE_READV(F, 64, doubles)
     ALWAYS_INLINE static \
     auto _ ## prefix ## ReadV ## size( \
         Memory *memory, MVn<T> mem) -> decltype(T().vec_accessor) { \
-      decltype(T().vec_accessor) vec; \
+      decltype(T().vec_accessor) vec = {}; \
+      const addr_t el_size = sizeof(vec.elems[0]); \
       _Pragma("unroll") \
-      for (size_t i = 0; i < NumVectorElems(vec); ++i) { \
+      for (addr_t i = 0; i < NumVectorElems(vec); ++i) { \
         vec.elems[i] = __remill_read_memory_ ## mem_accessor( \
-            memory, mem.addr + (i * sizeof(vec.elems[0]))); \
+            memory, mem.addr + (i * el_size)); \
       } \
       return vec; \
     } \
@@ -236,11 +262,12 @@ MAKE_READV(F, 64, doubles)
     ALWAYS_INLINE static \
     auto _ ## prefix ## ReadV ## size( \
         Memory *memory, MVnW<T> mem) -> decltype(T().vec_accessor) { \
-      decltype(T().vec_accessor) vec; \
+      decltype(T().vec_accessor) vec = {}; \
+      const addr_t el_size = sizeof(vec.elems[0]); \
       _Pragma("unroll") \
-      for (size_t i = 0; i < NumVectorElems(vec); ++i) { \
+      for (addr_t i = 0; i < NumVectorElems(vec); ++i) { \
         vec.elems[i] = __remill_read_memory_ ## mem_accessor( \
-            memory, mem.addr + (i * sizeof(vec.elems[0]))); \
+            memory, mem.addr + (i * el_size)); \
       } \
       return vec; \
     }
@@ -270,7 +297,7 @@ MAKE_MREADV(F, 64, doubles, f64)
       auto &sub_vec = reinterpret_cast<T *>(vec.val_ref)->accessor; \
       sub_vec.elems[0] = val; \
       _Pragma("unroll") \
-      for (size_t i = 1; i < NumVectorElems(sub_vec); ++i) { \
+      for (addr_t i = 1; i < NumVectorElems(sub_vec); ++i) { \
         sub_vec.elems[i] = 0; \
       } \
       return memory; \
@@ -288,11 +315,11 @@ MAKE_MREADV(F, 64, doubles, f64)
                     "Incompatible types to a write to a vector register"); \
       auto &sub_vec = reinterpret_cast<T *>(vec.val_ref)->accessor; \
       _Pragma("unroll") \
-      for (size_t i = 0; i < NumVectorElems(val); ++i) { \
+      for (addr_t i = 0; i < NumVectorElems(val); ++i) { \
         sub_vec.elems[i] = val.elems[i]; \
       } \
       _Pragma("unroll") \
-      for (size_t i = NumVectorElems(val); i < NumVectorElems(sub_vec); ++i) {\
+      for (addr_t i = NumVectorElems(val); i < NumVectorElems(sub_vec); ++i) {\
         sub_vec.elems[i] = 0; \
       } \
       return memory; \
@@ -334,12 +361,13 @@ MAKE_WRITEV(F, 64, doubles, RVnW, float64_t)
     Memory *_ ## prefix ## WriteV ## size( \
         Memory *memory, MVnW<T> mem, base_type val) { \
       T vec{}; \
+      const addr_t el_size = sizeof(base_type); \
       vec.vec_accessor.elems[0] = val; \
       _Pragma("unroll") \
-      for (size_t i = 0; i < NumVectorElems(vec.vec_accessor); ++i) { \
+      for (addr_t i = 0; i < NumVectorElems(vec.vec_accessor); ++i) { \
         memory = __remill_write_memory_ ## mem_accessor( \
             memory, \
-            mem.addr + (i * sizeof(base_type)), \
+            mem.addr + (i * el_size), \
             vec.vec_accessor.elems[i]); \
       } \
       return memory; \
@@ -355,11 +383,12 @@ MAKE_WRITEV(F, 64, doubles, RVnW, float64_t)
       typedef decltype(V()) VT; \
       static_assert(std::is_same<BT, VT>::value, \
                     "Incompatible types to a write to a vector register"); \
+      const addr_t el_size = sizeof(base_type); \
       _Pragma("unroll") \
-      for (size_t i = 0; i < NumVectorElems(val); ++i) { \
+      for (addr_t i = 0; i < NumVectorElems(val); ++i) { \
         memory = __remill_write_memory_ ## mem_accessor( \
             memory, \
-            mem.addr + (i * sizeof(base_type)), \
+            mem.addr + (i * el_size), \
             val.elems[i]); \
       } \
       return memory; \
@@ -394,6 +423,7 @@ MAKE_WRITE_REF(uint8_t)
 MAKE_WRITE_REF(uint16_t)
 MAKE_WRITE_REF(uint32_t)
 MAKE_WRITE_REF(uint64_t)
+MAKE_WRITE_REF(uint128_t)
 MAKE_WRITE_REF(float32_t)
 MAKE_WRITE_REF(float64_t)
 
@@ -467,10 +497,12 @@ MAKE_CONVERT(int8_t, Int8)
 MAKE_CONVERT(int16_t, Int16)
 MAKE_CONVERT(int32_t, Int32)
 MAKE_CONVERT(int64_t, Int64)
+MAKE_CONVERT(int128_t, Int128)
 MAKE_CONVERT(uint8_t, UInt8)
 MAKE_CONVERT(uint16_t, UInt16)
 MAKE_CONVERT(uint32_t, UInt32)
 MAKE_CONVERT(uint64_t, UInt64)
+MAKE_CONVERT(uint128_t, UInt128)
 MAKE_CONVERT(float32_t, Float32)
 MAKE_CONVERT(float64_t, Float64)
 
@@ -847,6 +879,42 @@ MAKE_EXTRACTV(64, float64_t, doubles, Identity, F)
 
 #undef MAKE_EXTRACTV
 
+ALWAYS_INLINE static int8_t SAbs(int8_t val) {
+  return val < 0 ? -val : val;
+}
+
+ALWAYS_INLINE static int16_t SAbs(int16_t val) {
+  return val < 0 ? -val : val;
+}
+
+ALWAYS_INLINE static int32_t SAbs(int32_t val) {
+  return val < 0 ? -val : val;
+}
+
+ALWAYS_INLINE static int64_t SAbs(int64_t val) {
+  return val < 0 ? -val : val;
+}
+
+ALWAYS_INLINE static float32_t FAbs(float32_t val) {
+  return __builtin_fabsf(val);
+}
+
+ALWAYS_INLINE static float64_t FAbs(float64_t val) {
+  return __builtin_fabs(val);
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto SAbs(typename IntegerType<T>::ST val) -> typename IntegerType<T>::ST {
+  return Select(SLt(val, 0), SNeg(val), val);
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto UAbs(typename IntegerType<T>::UT val) -> typename IntegerType<T>::UT {
+  return val;
+}
+
 // Access the Nth element of an aggregate vector.
 #define MAKE_INSERTV(prefix, size, base_type, accessor) \
     template <typename T> \
@@ -908,7 +976,7 @@ T _ZeroVec(void) {
 //            communicate the error class?
 #define StopFailure() \
     do { \
-      __remill_error(state, memory, Read(REG_XIP)); \
+      __remill_error(memory, state, Read(REG_XIP)); \
       __builtin_unreachable(); \
     } while (false)
 
@@ -1017,8 +1085,8 @@ auto ReadPtr(addr_t addr) -> Mn<typename BaseType<T>::BT> {
 
 template <typename T>
 ALWAYS_INLINE static
-auto ReadPtr(addr_t addr, addr_t seg) -> Mn<typename BaseType<T>::BT> {
-  return {__remill_compute_address(addr, seg)};
+auto ReadPtr(addr_t addr, addr_t seg_base) -> Mn<typename BaseType<T>::BT> {
+  return {addr + seg_base};
 }
 
 template <typename T>
@@ -1029,8 +1097,32 @@ auto WritePtr(addr_t addr) -> MnW<typename BaseType<T>::BT> {
 
 template <typename T>
 ALWAYS_INLINE static
-auto WritePtr(addr_t addr, addr_t seg) -> MnW<typename BaseType<T>::BT> {
-  return {__remill_compute_address(addr, seg)};
+auto WritePtr(addr_t addr, addr_t seg_base) -> MnW<typename BaseType<T>::BT> {
+  return {addr + seg_base};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto VReadPtr(addr_t addr) -> MVn<T> {
+  return {addr};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto VReadPtr(addr_t addr, addr_t seg_base) -> MVn<T> {
+  return {addr + seg_base};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto VWritePtr(addr_t addr) -> MVnW<T> {
+  return {addr};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+auto VWritePtr(addr_t addr, addr_t seg_base) -> MVnW<T> {
+  return {addr + seg_base};
 }
 
 template <typename T>
@@ -1051,7 +1143,7 @@ T Select(bool cond, T if_true, T if_false) {
   return cond ? if_true : if_false;
 }
 
-#define BUndefined __remill_undefined_bool
+#define BUndefined __remill_undefined_8
 #define UUndefined8 __remill_undefined_8
 #define UUndefined16 __remill_undefined_16
 #define UUndefined32 __remill_undefined_32
@@ -1074,6 +1166,150 @@ Memory *__remill_write_memory_128(Memory *mem, addr_t addr, uint128_t val) {
   mem = __remill_write_memory_64(mem, addr, low_qword);
   mem = __remill_write_memory_64(mem, addr + 8, high_qword);
   return mem;
+}
+
+#define MAKE_BUILTIN(name, size, input_size, builtin, disp) \
+    ALWAYS_INLINE static uint ## size ## _t name(uint ## size ## _t val) { \
+      return static_cast<uint ## size ## _t>( \
+          builtin(static_cast<uint ## input_size ## _t>(val))) - \
+          static_cast<uint ## input_size ## _t>(disp); \
+    }
+
+MAKE_BUILTIN(CountLeadingZeros, 8, 32, __builtin_clz, 24)
+MAKE_BUILTIN(CountLeadingZeros, 16, 32, __builtin_clz, 16)
+MAKE_BUILTIN(CountLeadingZeros, 32, 32, __builtin_clz, 0)
+MAKE_BUILTIN(CountLeadingZeros, 64, 64, __builtin_clzll, 0)
+
+MAKE_BUILTIN(CountTrailingZeros, 8, 32, __builtin_ctz, 0)
+MAKE_BUILTIN(CountTrailingZeros, 16, 32, __builtin_ctz, 0)
+MAKE_BUILTIN(CountTrailingZeros, 32, 32, __builtin_ctz, 0)
+MAKE_BUILTIN(CountTrailingZeros, 64, 64, __builtin_ctzll, 0)
+
+#undef MAKE_BUILTIN
+
+ALWAYS_INLINE static
+int16_t Float64ToInt16(float64_t val) {
+  auto max_int = Float64(Maximize(Int16(0)));
+  return Select(FCmpLt(max_int, FAbs(val)), 0x8000_s16, Int16(val));
+}
+
+ALWAYS_INLINE static
+int32_t Float64ToInt32(float64_t val) {
+  auto max_int = Float64(Maximize(Int32(0)));
+  return Select(FCmpLt(max_int, FAbs(val)), 0x80000000_s32, Int32(val));
+}
+
+ALWAYS_INLINE static
+int16_t Float32ToInt16(float32_t val) {
+  auto max_int = Float32(Maximize(Int32(0)));
+  return Select(FCmpLt(max_int, FAbs(val)), 0x8000_s16, Int16(val));
+}
+
+ALWAYS_INLINE static
+int32_t Float32ToInt32(float32_t val) {
+  auto max_int = Float32(Maximize(Int32(0)));
+  return Select(FCmpLt(max_int, FAbs(val)), 0x80000000_s32, Int32(val));
+}
+
+ALWAYS_INLINE static
+int64_t Float32ToInt64(float32_t val) {
+  return Int64(val);
+}
+
+ALWAYS_INLINE static
+int64_t Float64ToInt64(float64_t val) {
+  auto max_int = Float64(Maximize(Int64(0)));
+  return Select(FCmpLt(max_int, FAbs(val)), 0x8000000000000000_s64, Int64(val));
+}
+
+ALWAYS_INLINE static
+float32_t FRoundUsingMode32(float32_t val) {
+  return __builtin_nearbyintf(val);
+}
+
+ALWAYS_INLINE static
+float64_t FRoundUsingMode64(float64_t val) {
+  return __builtin_nearbyint(val);
+}
+
+ALWAYS_INLINE static
+float32_t FTruncTowardZero32(float32_t val) {
+  return __builtin_truncf(val);
+}
+
+ALWAYS_INLINE static
+float64_t FTruncTowardZero64(float64_t val) {
+  return __builtin_trunc(val);
+}
+
+ALWAYS_INLINE static
+float32_t FRoundAwayFromZero32(float32_t val) {
+  return __builtin_roundf(val);
+}
+
+ALWAYS_INLINE static
+float64_t FRoundAwayFromZero64(float64_t val) {
+  return __builtin_round(val);
+}
+
+ALWAYS_INLINE static
+float32_t FRoundToNearestEven32(float32_t val) {
+  return FRoundUsingMode32(val);
+//  auto abs_val = __builtin_fabsf(val);
+//  auto sign = (val / abs_val);
+//  auto floor_val = __builtin_floorf(abs_val);
+//  auto ceil_val = __builtin_ceilf(abs_val);
+//  auto halfway_val = floor_val + 0.5;
+//  if (halfway_val == abs_val) {  // Half-way case.
+//    auto floor_val_int = Float32ToInt64(floor_val);
+//    if (floor_val_int % 2) {
+//      return ceil_val * sign;
+//    } else {
+//      return floor_val * sign;
+//    }
+//  } else {
+//    return __builtin_roundf(val);
+//  }
+}
+
+ALWAYS_INLINE static
+float64_t FRoundToNearestEven64(float64_t val) {
+  return FRoundUsingMode64(val);
+//  auto abs_val = __builtin_fabs(val);
+//  auto sign = (val / abs_val);
+//  auto floor_val = __builtin_floor(abs_val);
+//  auto ceil_val = __builtin_ceil(abs_val);
+//  auto halfway_val = floor_val + 0.5;
+//  if (halfway_val == abs_val) {  // Half-way case.
+//    auto floor_val_int = Float64ToInt64(floor_val);
+//    if (floor_val_int % 2) {
+//      return ceil_val * sign;
+//    } else {
+//      return floor_val * sign;
+//    }
+//  } else {
+//    return __builtin_round(val);
+//  }
+}
+
+ALWAYS_INLINE static
+float32_t FRoundToPositiveInfinity32(float32_t val) {
+  return __builtin_ceilf(val);
+}
+
+ALWAYS_INLINE static
+float64_t FRoundToPositiveInfinity64(float64_t val) {
+  return __builtin_ceil(val);
+}
+
+ALWAYS_INLINE static
+float32_t FRoundToNegativeInfinity32(float32_t val) {
+  return __builtin_floorf(val);
+}
+
+ALWAYS_INLINE static
+float64_t FRoundToNegativeInfinity64(float64_t val) {
+  return __builtin_floor(val);
 }
 
 }  // namespace

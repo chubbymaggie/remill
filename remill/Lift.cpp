@@ -14,10 +14,15 @@
 #include <llvm/Support/CommandLine.h>
 
 #include "remill/Arch/Arch.h"
-#include "remill/Arch/AssemblyWriter.h"
-#include "remill/BC/Translator.h"
+#include "remill/Arch/Name.h"
+
+#include "remill/BC/Lifter.h"
 #include "remill/BC/Util.h"
+
 #include "remill/CFG/CFG.h"
+
+#include "remill/OS/FileSystem.h"
+#include "remill/OS/OS.h"
 
 #ifndef REMILL_OS
 # if defined(__APPLE__)
@@ -26,17 +31,6 @@
 #   define REMILL_OS "linux"
 # endif
 #endif
-
-#ifndef BUILD_SEMANTICS_DIR
-# error "Macro `BUILD_SEMANTICS_DIR` must be defined."
-# define BUILD_SEMANTICS_DIR
-#endif  // BUILD_SEMANTICS_DIR
-
-#ifndef INSTALL_SEMANTICS_DIR
-# error "Macro `INSTALL_SEMANTICS_DIR` must be defined."
-# define INSTALL_SEMANTICS_DIR
-#endif  // INSTALL_SEMANTICS_DIR
-
 
 // TODO(pag): Support separate source and target architectures?
 DEFINE_string(arch_in, "", "Architecture of the code being translated. "
@@ -63,57 +57,8 @@ DEFINE_string(bc_in, "", "Input bitcode file into which code will "
 
 DEFINE_string(bc_out, "", "Output bitcode file name.");
 
-DEFINE_string(asm_out, "", "Output disassembly file name. This is produced "
-                           "by the translator and contains disassembled "
-                           "instructions. Debug information references this "
-                           "file.");
-
-namespace {
-
-static const char *gSearchPaths[] = {
-    // Derived from the build.
-    BUILD_SEMANTICS_DIR "\0",
-    INSTALL_SEMANTICS_DIR "\0",
-
-    // Linux.
-    "/usr/local/share/remill/semantics",
-    "/usr/share/remill/semantics",
-
-    // Other?
-    "/opt/local/share/remill/semantics",
-    "/opt/share/remill/semantics",
-    "/opt/remill/semantics",
-
-    // FreeBSD.
-    "/usr/share/compat/linux/remill/semantics",
-    "/usr/local/share/compat/linux/remill/semantics",
-    "/compat/linux/usr/share/remill/semantics",
-    "/compat/linux/usr/local/share/remill/semantics",
-};
-
-static bool CheckPath(const std::string &path) {
-  return !path.empty() && !access(path.c_str(), F_OK);
-}
-
-static std::string InputBCPath(void) {
-  if (!FLAGS_bc_in.empty()) {
-    return FLAGS_bc_in;
-  }
-
-  for (auto path : gSearchPaths) {
-    std::stringstream ss;
-    ss << path << "/" << FLAGS_arch_in << ".bc";
-    auto sem_path = ss.str();
-    if (CheckPath(sem_path)) {
-      return sem_path;
-    }
-  }
-
-  LOG(FATAL)
-      << "Cannot find path to " << FLAGS_arch_in << " semantics bitcode file.";
-}
-
-}  // namespace
+DEFINE_bool(server, false, "Run the lifter as a server. This will allow "
+                           "remill-lift to receive CFG files over time.");
 
 int main(int argc, char *argv[]) {
   std::stringstream ss;
@@ -124,105 +69,80 @@ int main(int argc, char *argv[]) {
      << "    --arch_in SOURCE_ARCH_NAME \\" << std::endl
      << "    [--arch_out TARGET_ARCH_NAME] \\" << std::endl
      << "    --os_in SOURCE_OS_NAME \\" << std::endl
-     << "    [--os_our TARGET_OS_NAME] \\" << std::endl
-     << "    --cfg CFG_FILE"
+     << "    [--os_out TARGET_OS_NAME] \\" << std::endl
+     << "    --cfg CFG_FILE \\" << std::endl
+     << "    [--server]" << std::endl
      << std::endl;
 
+  google::InitGoogleLogging(argv[0]);
   google::SetUsageMessage(ss.str());
   google::ParseCommandLineFlags(&argc, &argv, true);
-  google::InitGoogleLogging(argv[0]);
 
-  // GFlags will have removed everything that it recognized from argc/argv.
-  llvm::cl::ParseCommandLineOptions(argc, argv, "Remill: Lift CFG to LLVM");
-
-  if (FLAGS_os_in.empty()) {
-    std::cerr
-        << "Need to specify a source operating system with --os_in."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  CHECK(!FLAGS_os_in.empty())
+      << "Need to specify a source operating system with --os_in.";
 
   if (FLAGS_os_out.empty()) {
     FLAGS_os_out = FLAGS_os_in;
-    std::cerr
-        << "Need to specify a target operating system with --os_out."
-        << std::endl;
-    return EXIT_FAILURE;
   }
 
-  if (FLAGS_arch_in.empty()) {
-    std::cerr
-        << "Need to specify a source architecture with --arch_in."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  CHECK(!FLAGS_arch_in.empty())
+      << "Need to specify a source architecture with --arch_in.";
 
   if (FLAGS_arch_out.empty()) {
     FLAGS_arch_out = FLAGS_arch_in;
   }
 
-  if (FLAGS_cfg.empty()) {
-    std::cerr
-        << "Must specify CFG file with --cfg."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  CHECK(!FLAGS_cfg.empty())
+      << "Must specify CFG file with --cfg.";
 
-  if (FLAGS_bc_out.empty()) {
-    std::cerr
-        << "Please specify an output bitcode file with --bc_out."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  CHECK(!FLAGS_bc_out.empty())
+      << "Please specify an output bitcode file with --bc_out.";
 
   auto source_os = remill::GetOSName(FLAGS_os_in);
+  CHECK(remill::kOSInvalid != source_os)
+      << "Unsupported operating system for --os_in: " << FLAGS_os_in;
+
   auto target_os = remill::GetOSName(FLAGS_os_out);
+  CHECK(remill::kOSInvalid != source_os)
+      << "Unsupported operating system for --os_out: " << FLAGS_os_out;
 
-  auto source_arch = remill::Arch::Create(source_os, FLAGS_arch_in);
-  auto target_arch = remill::Arch::Create(target_os, FLAGS_arch_out);
+  auto source_arch_name = remill::GetArchName(FLAGS_arch_in);
+  CHECK(remill::kArchInvalid != source_arch_name)
+      << "Unrecognized architecture for --arch_in: " << FLAGS_arch_in << ".";
 
-  if (!CheckPath(FLAGS_cfg)) {
-    std::cerr
-        << "Must specify valid path for `--cfg`. CFG file " << FLAGS_cfg
-        << " cannot be opened."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  auto target_arch_name = remill::GetArchName(FLAGS_arch_out);
+  CHECK(remill::kArchInvalid != target_arch_name)
+      << "Unrecognized architecture for --arch_out: " << FLAGS_arch_out << ".";
 
-  FLAGS_bc_in = InputBCPath();
-  if (!CheckPath(FLAGS_bc_in)) {
-    std::cerr
-        << "Must specify valid path for `--bc_in`. Bitcode file "
-        << FLAGS_bc_in << " cannot be opened."
-        << std::endl;
-    return EXIT_FAILURE;
-  }
+  auto source_arch = remill::Arch::Create(source_os, source_arch_name);
+  auto target_arch = remill::Arch::Create(target_os, target_arch_name);
 
+  CHECK(remill::FileExists(FLAGS_cfg))
+      << "Must specify valid path for --cfg. CFG file "
+      << FLAGS_cfg << " cannot be opened.";
 
-  auto context = new llvm::LLVMContext;
-  auto module = remill::LoadModuleFromFile(context, FLAGS_bc_in);
-  target_arch->PrepareModule(module);
+  FLAGS_bc_in = remill::FindSemanticsBitcodeFile(FLAGS_bc_in, FLAGS_arch_in);
+  CHECK(remill::FileExists(FLAGS_bc_in))
+      << "Must specify valid path for --bc_in. Bitcode file "
+      << FLAGS_bc_in << " cannot be opened.";
 
-  remill::AssemblyWriter *asm_writer = nullptr;
-  if (!FLAGS_asm_out.empty()) {
-    asm_writer = new remill::AssemblyWriter(module, FLAGS_asm_out);
-  }
+  do {
+    auto context = new llvm::LLVMContext;
+    auto module = remill::LoadModuleFromFile(context, FLAGS_bc_in);
+    target_arch->PrepareModule(module);
 
-  remill::Translator lifter(source_arch, module, asm_writer);
+    auto translator = new remill::Lifter(source_arch, module);
+    auto cfg = remill::ReadCFG(FLAGS_cfg);
+    translator->LiftCFG(cfg);
+    delete cfg;
+    delete translator;
 
-  auto cfg = remill::ReadCFG(FLAGS_cfg);
-  lifter.LiftCFG(cfg);
+    remill::StoreModuleToFile(module, FLAGS_bc_out);
+    delete module;
+    delete context;
+  } while (FLAGS_server);
 
-  if (asm_writer) {
-    delete asm_writer;
-    asm_writer = nullptr;
-  }
-
-  remill::StoreModuleToFile(module, FLAGS_bc_out);
-
-  delete cfg;
-  delete source_arch;
-
+  google::ShutDownCommandLineFlags();
   google::ShutdownGoogleLogging();
   return EXIT_SUCCESS;
 }

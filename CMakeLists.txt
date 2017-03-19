@@ -1,4 +1,4 @@
-# Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved.
+# Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved.
 
 set(CMAKE_ASM_COMPILER ${CMAKE_CXX_COMPILER})
 
@@ -9,7 +9,6 @@ enable_language(ASM)
 
 LIST(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_LIST_DIR}/cmake")
 
-set(LLVM_DIR "/usr/lib/llvm-3.9/lib/cmake/llvm/")
 find_package(LLVM 3.9 REQUIRED)
 find_package(XED REQUIRED)
 find_package(GLOG REQUIRED)
@@ -39,34 +38,13 @@ if(NOT DEFINED CMAKE_LLVM_LINK)
     set(CMAKE_LLVM_LINK "${LLVM_INSTALL_PREFIX}/bin/llvm-link")
 endif()
 
+if(UNIX AND NOT APPLE)
+    set(LINUX TRUE)
+endif()
+
 add_definitions(${LLVM_DEFINITIONS})
 
-add_executable(remill-lift
-    remill/Lift.cpp
-    remill/Arch/X86/Arch.cpp
-    remill/Arch/AssemblyWriter.cpp
-    remill/Arch/Arch.cpp
-    remill/Arch/Instruction.cpp
-    remill/CFG/CFG.cpp
-    remill/BC/Translator.cpp
-    remill/BC/Util.cpp
-    remill/BC/IntrinsicTable.cpp
-    remill/OS/OS.cpp
-)
-
-target_link_libraries(remill-lift
-    ${GFLAGS_LIBRARIES}
-    ${GLOG_LIBRARIES}
-    ${XED_LIBRARIES}
-    ${PROTOBUF_LIBRARIES}
-    
-    LLVMIRReader LLVMBitReader LLVMBitWriter
-    LLVMTransformUtils
-    LLVMScalarOpts
-    LLVMSupport
-)
-
-target_compile_options(remill-lift PRIVATE
+add_compile_options(
     -x c++
 
     -Wall
@@ -77,39 +55,88 @@ target_compile_options(remill-lift PRIVATE
     -g3
     -O0
     
-    # LLVM headers break these :-(
-    #-Wshadow
-    #-Wshorten-64-to-32
-
     -Wno-unused-parameter
     -Wno-c++98-compat
     -Wno-unreachable-code-return
     -Wno-nested-anon-types
     -Wno-extended-offsetof
     -Wno-gnu-anonymous-struct
+    -Wno-gnu-designator
     -Wno-variadic-macros
     -Wno-gnu-zero-variadic-macro-arguments
     -Wno-gnu-statement-expression
-    -Wno-error=unused-command-line-argument
-    -Wno-override-module
     -Wno-return-type-c-linkage
     -Wno-c99-extensions
     -Wno-ignored-attributes
-      
+    -Wno-unused-local-typedef
+    
     -fno-omit-frame-pointer
     -fvisibility-inlines-hidden
 
+    -fno-exceptions
     -fno-rtti
-    -DGOOGLE_PROTOBUF_NO_RTTI
+    -fno-asynchronous-unwind-tables
 
+    -fno-rtti
     -std=gnu++11
-
     -fPIC
-    -fpie
+    -fPIE
     -m64
 
     -DINSTALL_SEMANTICS_DIR="${CMAKE_INSTALL_PREFIX}/share/remill/semantics/"
     -DBUILD_SEMANTICS_DIR="${CMAKE_CURRENT_BINARY_DIR}/"
+    -DGOOGLE_PROTOBUF_NO_RTTI
+)
+
+add_executable(remill-lift
+    remill/Lift.cpp
+    remill/Arch/X86/Arch.cpp
+    remill/Arch/Arch.cpp
+    remill/Arch/Instruction.cpp
+    remill/Arch/Name.cpp
+    remill/CFG/CFG.cpp
+    remill/BC/Lifter.cpp
+    remill/BC/Util.cpp
+    remill/BC/IntrinsicTable.cpp
+    remill/OS/FileSystem.cpp
+    remill/OS/OS.cpp
+)
+
+set(LLVM_LIBS
+    curses
+    LLVMCore
+    LLVMSupport
+    LLVMAnalysis
+    LLVMipo
+    LLVMIRReader
+    LLVMBitReader
+    LLVMBitWriter
+    LLVMTransformUtils
+    LLVMScalarOpts
+)
+
+target_link_libraries(remill-lift
+    ${GFLAGS_LIBRARIES}
+    ${GLOG_LIBRARIES}
+    ${XED_LIBRARIES}
+    ${PROTOBUF_LIBRARIES}
+    ${LLVM_LIBS}
+)
+
+add_executable(remill-opt
+    remill/Optimize.cpp
+    remill/BC/Util.cpp
+    remill/BC/IntrinsicTable.cpp
+    remill/BC/Optimizer.cpp
+    remill/OS/FileSystem.cpp
+    remill/OS/OS.cpp
+)
+
+target_link_libraries(remill-opt
+    ${GFLAGS_LIBRARIES}
+    ${GLOG_LIBRARIES}
+    ${LLVM_LIBS}
+    LLVMLTO
 )
 
 add_custom_target(semantics)
@@ -125,12 +152,21 @@ macro(COMPILE_X86_SEMANTICS name address_size has_avx has_avx512)
 
         -std=gnu++11
         
-        -m${address_size}
+        # TODO(pag): This should be what I do, but I've observed strange LLVM
+        #            code gen issues, where 32-bit code whose data layout is
+        #            converted to 64-bit code will sometimes miscompile pointers
+        #            as 32-bit. This is, of course, in bitcode that doesn't
+        #            do any ptrtoint or inttoptr casts! And this issue doesn't
+        #            show up when certain amounts of very aggressive
+        #            optimizations are performed to the file before converting
+        #            to 32-bit >:-(
+        # -m${address_size}
         
         -Wall
         -Werror
         -Wshadow
         -Wconversion
+        -Wpadded
         -pedantic
         
         -Wshorten-64-to-32
@@ -143,15 +179,24 @@ macro(COMPILE_X86_SEMANTICS name address_size has_avx has_avx512)
         -Wno-c99-extensions
         -Wno-ignored-attributes
 
-        -ffreestanding
-
+        # All of these are needed to disable vectorization, both in the LLVM
+        # optimizer, and in the Clang front-end.
+        -mtune=generic
+        -mno-sse
+        -mno-avx
+        -mno-3dnow
         -fno-vectorize
         -fno-slp-vectorize
+        
+        -ffreestanding
         -fno-common
         -fno-builtin
         -fno-exceptions
         -fno-rtti
         -fno-asynchronous-unwind-tables
+
+        -Wno-unneeded-internal-declaration
+        -Wno-unused-function
     )
 
     # Note: `-O0 -g3` is significant here. We need to make sure that we can
@@ -173,7 +218,7 @@ macro(COMPILE_X86_SEMANTICS name address_size has_avx has_avx512)
     add_custom_target(Instructions.${name}.bc
         COMMAND ${CMAKE_CXX_COMPILER}
                 ${SEMANTICS_CXX_FLAGS}
-                -O3 -g
+                -O3 -g0
                 -c ${PROJECT_SOURCE_DIR}/remill/Arch/X86/Runtime/Instructions.cpp
                 -o Instructions.${name}.bc
         SOURCES remill/Arch/X86/Runtime/Instructions.cpp
@@ -203,8 +248,11 @@ COMPILE_X86_SEMANTICS(amd64 64 0 0)
 COMPILE_X86_SEMANTICS(amd64_avx 64 1 0)
 COMPILE_X86_SEMANTICS(amd64_avx512 64 1 1)
 
+# Bring in the tools.
+add_subdirectory(${PROJECT_SOURCE_DIR}/tools)
+
 install(
-    TARGETS remill-lift
+    TARGETS remill-lift remill-opt
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
 )

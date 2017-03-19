@@ -8,6 +8,8 @@ if [[ "$OSTYPE" == "linux-gnu" ]] ; then
 
 elif [[ "$OSTYPE" == "darwin"* ]] ; then
     OS_NAME=macos
+    echo "Skipping generating tests since we're on a Mac"
+    exit 0
 
 else
     printf "Unsupported platform: ${OSTYPE}${RESET}\n" > /dev/stderr
@@ -17,10 +19,7 @@ fi
 
 printf "Found OS ${OS_NAME}\n"
 
-CXX=$(which clang++-3.9)
-if [[ $? -ne 0 ]] ; then
-    CXX=$(which clang++)
-fi
+CXX=$DIR/build/llvm/bin/clang++
 
 printf "Found C++ compiler ${CXX}\n"
 
@@ -60,8 +59,7 @@ function lift_tests()
     remill-lift --cfg $DIR/generated/Arch/X86/Tests/${1}.cfg \
                 --os_in ${OS_NAME} --os_out ${OS_NAME} \
                 --arch_in ${1} --arch_out amd64 \
-                --bc_out $DIR/generated/Arch/X86/Tests/${1}.cfg.bc \
-                --asm_out $DIR/generated/Arch/X86/Tests/${1}.S
+                --bc_out $DIR/generated/Arch/X86/Tests/${1}.cfg.bc 
 }
 
 function compile_tests()
@@ -79,6 +77,7 @@ function compile_tests()
         -Wno-expansion-to-defined \
         -Wno-override-module \
         -m64 \
+        -mtune=native \
         -I${DIR} \
         -DADDRESS_SIZE_BITS=${1} \
         -DHAS_FEATURE_AVX=${2} \

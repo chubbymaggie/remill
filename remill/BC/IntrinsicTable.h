@@ -23,22 +23,7 @@ class IntrinsicTable {
   llvm::Function * const jump;
 
   // OS interaction.
-  llvm::Function * const system_call;
-  llvm::Function * const system_return;
-  llvm::Function * const interrupt_call;
-  llvm::Function * const interrupt_return;
-
-  // Arch interaction.
-  llvm::Function * const read_cpu_features;
-
-  // Transition to/from native/lifted code.
-  //
-  // TODO(pag): This is not really the best abstraction as it covers less than
-  //            it implies. For example, there is no representation for the
-  //            case where you detach on a function call, and want to attach
-  //            on return.
-  llvm::Function * const detach;
-//  llvm::Function * const attach;
+  llvm::Function * const async_hyper_call;
 
   // Memory read intrinsics.
   llvm::Function * const read_memory_8;
@@ -60,9 +45,6 @@ class IntrinsicTable {
   llvm::Function * const write_memory_f64;
   llvm::Function * const write_memory_f80;
 
-  // Addressing intrinsics.
-  llvm::Function * const compute_address;
-
   // Memory barriers.
   llvm::Function * const barrier_load_load;
   llvm::Function * const barrier_load_store;
@@ -76,7 +58,6 @@ class IntrinsicTable {
   llvm::Function * const defer_inlining;
 
   // Optimization enabling.
-  llvm::Function *undefined_bool;
   llvm::Function *undefined_8;
   llvm::Function *undefined_16;
   llvm::Function *undefined_32;

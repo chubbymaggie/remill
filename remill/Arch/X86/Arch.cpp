@@ -2,15 +2,17 @@
 
 #include <glog/logging.h>
 
+#include <map>
 #include <sstream>
 #include <string>
 
 #include <llvm/IR/Module.h>
 
 #include "remill/Arch/Instruction.h"
-
+#include "remill/Arch/Name.h"
 #include "remill/Arch/X86/Arch.h"
 #include "remill/Arch/X86/XED.h"
+#include "remill/OS/OS.h"
 
 namespace remill {
 namespace {
@@ -118,10 +120,6 @@ static bool IsError(const xed_decoded_inst_t *xedd) {
          XED_ICLASS_INVALID == iclass;
 }
 
-static bool IsReadCPUFeatures(const xed_decoded_inst_t *xedd) {
-  return XED_ICLASS_CPUID == xed_decoded_inst_get_iclass(xedd);
-}
-
 // Return the category of this instruction.
 static Instruction::Category CreateCategory(const xed_decoded_inst_t *xedd) {
   if (IsError(xedd)) {
@@ -147,54 +145,112 @@ static Instruction::Category CreateCategory(const xed_decoded_inst_t *xedd) {
 
   // Instruction implementation handles syscall emulation.
   } else if (IsSystemCall(xedd)) {
-    return Instruction::kCategorySystemCall;
+    return Instruction::kCategoryAsyncHyperCall;
 
   } else if (IsSystemReturn(xedd)) {
-    return Instruction::kCategorySystemReturn;
+    return Instruction::kCategoryAsyncHyperCall;
 
   // Instruction implementation handles syscall (x86, x32) emulation. This is
   // invoked even for conditional interrupt, where a special flag is used to
   // denote that the interrupt should happen.
   } else if (IsInterruptCall(xedd)) {
-    return Instruction::kCategoryInterruptCall;
+    return Instruction::kCategoryAsyncHyperCall;
 
   } else if (IsConditionalInterruptCall(xedd)) {
-    return Instruction::kCategoryConditionalInterruptCall;
+    return Instruction::kCategoryConditionalAsyncHyperCall;
 
   } else if (IsInterruptReturn(xedd)) {
-    return Instruction::kCategoryInterruptReturn;
+    return Instruction::kCategoryAsyncHyperCall;
 
   } else if (IsNoOp(xedd)) {
     return Instruction::kCategoryNoOp;
-
-  // CPUID. Lets a runtime or static analyzer decide what this means.
-  } else if (IsReadCPUFeatures(xedd)) {
-    return Instruction::kCategoryReadCPUFeatures;
 
   } else {
     return Instruction::kCategoryNormal;
   }
 }
 
+std::map<xed_iform_enum_t, xed_iform_enum_t> kUnlockedIform = {
+    {XED_IFORM_ADC_LOCK_MEMb_IMMb_80r2, XED_IFORM_ADC_MEMb_IMMb_80r2},
+    {XED_IFORM_ADC_LOCK_MEMv_IMMz, XED_IFORM_ADC_MEMv_IMMz},
+    {XED_IFORM_ADC_LOCK_MEMb_IMMb_82r2, XED_IFORM_ADC_MEMb_IMMb_82r2},
+    {XED_IFORM_ADC_LOCK_MEMv_IMMb, XED_IFORM_ADC_MEMv_IMMb},
+    {XED_IFORM_ADC_LOCK_MEMb_GPR8, XED_IFORM_ADC_MEMb_GPR8},
+    {XED_IFORM_ADC_LOCK_MEMv_GPRv, XED_IFORM_ADC_MEMv_GPRv},
+    {XED_IFORM_DEC_LOCK_MEMb, XED_IFORM_DEC_MEMb},
+    {XED_IFORM_DEC_LOCK_MEMv, XED_IFORM_DEC_MEMv},
+    {XED_IFORM_NOT_LOCK_MEMb, XED_IFORM_NOT_MEMb},
+    {XED_IFORM_NOT_LOCK_MEMv, XED_IFORM_NOT_MEMv},
+    {XED_IFORM_SUB_LOCK_MEMb_IMMb_80r5, XED_IFORM_SUB_MEMb_IMMb_80r5},
+    {XED_IFORM_SUB_LOCK_MEMv_IMMz, XED_IFORM_SUB_MEMv_IMMz},
+    {XED_IFORM_SUB_LOCK_MEMb_IMMb_82r5, XED_IFORM_SUB_MEMb_IMMb_82r5},
+    {XED_IFORM_SUB_LOCK_MEMv_IMMb, XED_IFORM_SUB_MEMv_IMMb},
+    {XED_IFORM_SUB_LOCK_MEMb_GPR8, XED_IFORM_SUB_MEMb_GPR8},
+    {XED_IFORM_SUB_LOCK_MEMv_GPRv, XED_IFORM_SUB_MEMv_GPRv},
+    {XED_IFORM_BTC_LOCK_MEMv_IMMb, XED_IFORM_BTC_MEMv_IMMb},
+    {XED_IFORM_BTC_LOCK_MEMv_GPRv, XED_IFORM_BTC_MEMv_GPRv},
+    {XED_IFORM_AND_LOCK_MEMb_IMMb_80r4, XED_IFORM_AND_MEMb_IMMb_80r4},
+    {XED_IFORM_AND_LOCK_MEMv_IMMz, XED_IFORM_AND_MEMv_IMMz},
+    {XED_IFORM_AND_LOCK_MEMb_IMMb_82r4, XED_IFORM_AND_MEMb_IMMb_82r4},
+    {XED_IFORM_AND_LOCK_MEMv_IMMb, XED_IFORM_AND_MEMv_IMMb},
+    {XED_IFORM_AND_LOCK_MEMb_GPR8, XED_IFORM_AND_MEMb_GPR8},
+    {XED_IFORM_AND_LOCK_MEMv_GPRv, XED_IFORM_AND_MEMv_GPRv},
+    {XED_IFORM_CMPXCHG_LOCK_MEMb_GPR8, XED_IFORM_CMPXCHG_MEMb_GPR8},
+    {XED_IFORM_CMPXCHG_LOCK_MEMv_GPRv, XED_IFORM_CMPXCHG_MEMv_GPRv},
+    {XED_IFORM_INC_LOCK_MEMb, XED_IFORM_INC_MEMb},
+    {XED_IFORM_INC_LOCK_MEMv, XED_IFORM_INC_MEMv},
+    {XED_IFORM_OR_LOCK_MEMb_IMMb_80r1, XED_IFORM_OR_MEMb_IMMb_80r1},
+    {XED_IFORM_OR_LOCK_MEMv_IMMz, XED_IFORM_OR_MEMv_IMMz},
+    {XED_IFORM_OR_LOCK_MEMb_IMMb_82r1, XED_IFORM_OR_MEMb_IMMb_82r1},
+    {XED_IFORM_OR_LOCK_MEMv_IMMb, XED_IFORM_OR_MEMv_IMMb},
+    {XED_IFORM_OR_LOCK_MEMb_GPR8, XED_IFORM_OR_MEMb_GPR8},
+    {XED_IFORM_OR_LOCK_MEMv_GPRv, XED_IFORM_OR_MEMv_GPRv},
+    {XED_IFORM_XADD_LOCK_MEMb_GPR8, XED_IFORM_XADD_MEMb_GPR8},
+    {XED_IFORM_XADD_LOCK_MEMv_GPRv, XED_IFORM_XADD_MEMv_GPRv},
+    {XED_IFORM_ADD_LOCK_MEMb_IMMb_80r0, XED_IFORM_ADD_MEMb_IMMb_80r0},
+    {XED_IFORM_ADD_LOCK_MEMv_IMMz, XED_IFORM_ADD_MEMv_IMMz},
+    {XED_IFORM_ADD_LOCK_MEMb_IMMb_82r0, XED_IFORM_ADD_MEMb_IMMb_82r0},
+    {XED_IFORM_ADD_LOCK_MEMv_IMMb, XED_IFORM_ADD_MEMv_IMMb},
+    {XED_IFORM_ADD_LOCK_MEMb_GPR8, XED_IFORM_ADD_MEMb_GPR8},
+    {XED_IFORM_ADD_LOCK_MEMv_GPRv, XED_IFORM_ADD_MEMv_GPRv},
+    {XED_IFORM_SBB_LOCK_MEMb_IMMb_80r3, XED_IFORM_SBB_MEMb_IMMb_80r3},
+    {XED_IFORM_SBB_LOCK_MEMv_IMMz, XED_IFORM_SBB_MEMv_IMMz},
+    {XED_IFORM_SBB_LOCK_MEMb_IMMb_82r3, XED_IFORM_SBB_MEMb_IMMb_82r3},
+    {XED_IFORM_SBB_LOCK_MEMv_IMMb, XED_IFORM_SBB_MEMv_IMMb},
+    {XED_IFORM_SBB_LOCK_MEMb_GPR8, XED_IFORM_SBB_MEMb_GPR8},
+    {XED_IFORM_SBB_LOCK_MEMv_GPRv, XED_IFORM_SBB_MEMv_GPRv},
+    {XED_IFORM_BTS_LOCK_MEMv_IMMb, XED_IFORM_BTS_MEMv_IMMb},
+    {XED_IFORM_BTS_LOCK_MEMv_GPRv, XED_IFORM_BTS_MEMv_GPRv},
+    {XED_IFORM_XOR_LOCK_MEMb_IMMb_80r6, XED_IFORM_XOR_MEMb_IMMb_80r6},
+    {XED_IFORM_XOR_LOCK_MEMv_IMMz, XED_IFORM_XOR_MEMv_IMMz},
+    {XED_IFORM_XOR_LOCK_MEMb_IMMb_82r6, XED_IFORM_XOR_MEMb_IMMb_82r6},
+    {XED_IFORM_XOR_LOCK_MEMv_IMMb, XED_IFORM_XOR_MEMv_IMMb},
+    {XED_IFORM_XOR_LOCK_MEMb_GPR8, XED_IFORM_XOR_MEMb_GPR8},
+    {XED_IFORM_XOR_LOCK_MEMv_GPRv, XED_IFORM_XOR_MEMv_GPRv},
+    {XED_IFORM_BTR_LOCK_MEMv_IMMb, XED_IFORM_BTR_MEMv_IMMb},
+    {XED_IFORM_BTR_LOCK_MEMv_GPRv, XED_IFORM_BTR_MEMv_GPRv},
+    {XED_IFORM_CMPXCHG8B_LOCK_MEMq, XED_IFORM_CMPXCHG8B_MEMq},
+    {XED_IFORM_CMPXCHG8B_LOCK_MEMq, XED_IFORM_CMPXCHG8B_MEMq},
+    {XED_IFORM_CMPXCHG16B_LOCK_MEMdq, XED_IFORM_CMPXCHG16B_MEMdq},
+    {XED_IFORM_NEG_LOCK_MEMb, XED_IFORM_NEG_MEMb},
+    {XED_IFORM_NEG_LOCK_MEMv, XED_IFORM_NEG_MEMv},
+};
 
 // Name of this instruction function.
 static std::string InstructionFunctionName(const xed_decoded_inst_t *xedd) {
-  std::stringstream ss;
-  std::string iform_name = xed_iform_enum_t2str(
-      xed_decoded_inst_get_iform_enum(xedd));
 
-  // All `LOCK` versions of instructions have their own iform, but ideally
-  // we want to express the (non-)atomic versions of instructions uniformly.
-  // For locked instructions, we inject calls to atomic intrinsics before/after
-  // the lifted instructions.
+  // If this instruction is marked as atomic via the `LOCK` prefix then we want
+  // to remove it because we will already be surrounding the call to the
+  // semantics function with the atomic begin/end intrinsics.
+  auto iform = xed_decoded_inst_get_iform_enum(xedd);
   if (xed_operand_values_has_lock_prefix(xedd)) {
-    const std::string lock = "LOCK_";
-    const auto idx = iform_name.find(lock);
-    if (std::string::npos != idx) {
-      iform_name.erase(idx, lock.size());
-    }
+    CHECK(kUnlockedIform.count(iform))
+        << xed_iform_enum_t2str(iform) << " has no unlocked iform mapping.";
+    iform = kUnlockedIform[iform];
   }
 
+  std::stringstream ss;
+  std::string iform_name = xed_iform_enum_t2str(iform);
   ss << iform_name;
 
   // Some instructions are "scalable", i.e. there are variants of the
@@ -210,7 +266,7 @@ static std::string InstructionFunctionName(const xed_decoded_inst_t *xedd) {
 }
 
 // Decode an instruction into the XED instruction format.
-static void DecodeXED(xed_decoded_inst_t *xedd,
+static bool DecodeXED(xed_decoded_inst_t *xedd,
                       const xed_state_t *mode,
                       const std::string &instr_bytes,
                       uint64_t address) {
@@ -220,14 +276,14 @@ static void DecodeXED(xed_decoded_inst_t *xedd,
   xed_decoded_inst_set_input_chip(xedd, XED_CHIP_INVALID);
   auto err = xed_decode(xedd, bytes, static_cast<uint32_t>(num_bytes));
 
-  CHECK(XED_ERROR_NONE == err)
-      << "Unable to decode instruction at " << std::hex << address
-      << " with error: " << xed_error_enum_t2str(err) << ".";
+  if (XED_ERROR_NONE != err) {
+    LOG(ERROR)
+        << "Unable to decode instruction at " << std::hex << address
+        << " with error: " << xed_error_enum_t2str(err) << ".";
+    return false;
+  }
 
-  CHECK(xed_decoded_inst_get_length(xedd) == num_bytes)
-      << "Size of decoded instruction at " << std::hex << address <<
-      "(" << std::dec << xed_decoded_inst_get_length(xedd)
-      << ") doesn't match input instruction size (" << num_bytes << ").";
+  return true;
 }
 
 // Variable operand for a read register.
@@ -242,6 +298,16 @@ static Operand::Register RegOp(xed_reg_enum_t reg) {
     }
   }
   return reg_op;
+}
+
+static Operand::Register SegBaseRegOp(xed_reg_enum_t reg,
+                                      unsigned addr_size) {
+  auto op = RegOp(reg);
+  if (XED_REG_INVALID != reg) {
+    op.name += "_BASE";
+    op.size = addr_size;
+  }
+  return op;
 }
 
 // Decode a memory operand.
@@ -264,13 +330,6 @@ static void DecodeMemory(Instruction *instr,
   // PC-relative memory accesses are relative to the next PC.
   if (XED_REG_RIP == base_wide) {
     disp += static_cast<int64_t>(instr_size);
-
-  // Address is in the displacement. Take the absolute address and turn it
-  // into a PC-relative address.
-  } else if (XED_REG_INVALID == base && XED_REG_INVALID == index) {
-    base = Is64Bit(instr->arch_name) ? XED_REG_RIP : XED_REG_EIP;
-    disp -= static_cast<int64_t>(instr->next_pc);
-    base_wide = XED_REG_RIP;
   }
 
   // Deduce the implicit segment register if it is absent.
@@ -282,7 +341,8 @@ static void DecodeMemory(Instruction *instr,
   }
 
   // On AMD64, only the `FS` and `GS` segments are non-zero.
-  if (Is64Bit(instr->arch_name) && XED_REG_FS != segment &&
+  if (Is64Bit(instr->arch_name) &&
+      XED_REG_FS != segment &&
       XED_REG_GS != segment) {
     segment = XED_REG_INVALID;
 
@@ -305,15 +365,16 @@ static void DecodeMemory(Instruction *instr,
   op.addr.address_size = xed_decoded_inst_get_memop_address_width(
       xedd, mem_index);
 
-  op.addr.segment_reg = RegOp(segment);
+  op.addr.segment_base_reg = SegBaseRegOp(segment, op.addr.address_size);
   op.addr.base_reg = RegOp(base);
   op.addr.index_reg = RegOp(index);
   op.addr.scale = static_cast<int64_t>(scale);
   op.addr.displacement = disp;
 
-  // Rename the base register to use `NEXT_PC` as the register name.
+  // Rename the base register to use `PC` as the register name.
   if (XED_REG_RIP == base_wide) {
-    op.addr.base_reg.name = "NEXT_PC";
+    op.addr.base_reg.name = "PC";
+    op.addr.displacement += static_cast<int64_t>(instr->NumBytes());
   }
 
   // We always pass destination operands first, then sources. Memory operands
@@ -380,18 +441,12 @@ static void DecodeRegister(Instruction *instr,
 
   Operand op;
   op.type = Operand::kTypeRegister;
-  op.size = xed_get_register_width_bits64(reg);
-
-  // In remill, we represent X87 floating point registers using `double`s.
-  if (XED_REG_X87_FIRST <= reg && XED_REG_X87_LAST >= reg) {
-    op.size = 64;
-  }
+  op.reg = RegOp(reg);
+  op.size = op.reg.size;
 
   // Pass the register by reference.
   if (xed_operand_written(xedo)) {
-
     op.action = Operand::kActionWrite;
-    op.reg = RegOp(reg);
 
     // Note:  In `BasicBlock.cpp`, we alias things like `EAX_write` into
     //        `RAX_write` on 64-bit builds, so we just want to notify that
@@ -422,8 +477,6 @@ static void DecodeRegister(Instruction *instr,
 
   if (xed_operand_read(xedo)) {
     op.action = Operand::kActionRead;
-    op.size = xed_get_register_width_bits64(reg);
-    op.reg = RegOp(reg);
     instr->operands.push_back(op);
   }
 }
@@ -437,6 +490,26 @@ static void DecodeConditionalInterrupt(Instruction *instr) {
   cond_op.reg.size = 8;
   cond_op.size = 8;
   instr->operands.push_back(cond_op);
+}
+
+// Operand representing the fall-through PC, which is the not-taken branch of
+// a conditional jump, or the return address for a function call.
+static void DecodeFallThroughPC(Instruction *instr,
+                                const xed_decoded_inst_t *xedd) {
+  auto pc_reg = Is64Bit(instr->arch_name) ? XED_REG_RIP : XED_REG_EIP;
+  auto pc_width = xed_get_register_width_bits64(pc_reg);
+
+  Operand not_taken_op;
+  not_taken_op.action = Operand::kActionRead;
+  not_taken_op.type = Operand::kTypeAddress;
+  not_taken_op.size = pc_width;
+  not_taken_op.addr.address_size = pc_width;
+  not_taken_op.addr.base_reg.name = "PC";
+  not_taken_op.addr.base_reg.size = pc_width;
+  not_taken_op.addr.displacement = static_cast<int64_t>(instr->NumBytes());
+  instr->operands.push_back(not_taken_op);
+
+  instr->branch_not_taken_pc = instr->next_pc;
 }
 
 // Decode a relative branch target.
@@ -461,24 +534,16 @@ static void DecodeConditionalBranch(Instruction *instr,
   taken_op.action = Operand::kActionRead;
   taken_op.type = Operand::kTypeAddress;
   taken_op.size = pc_width;
-  taken_op.addr.base_reg.name = "NEXT_PC";
+  taken_op.addr.address_size = pc_width;
+  taken_op.addr.base_reg.name = "PC";
   taken_op.addr.base_reg.size = pc_width;
-  taken_op.addr.displacement = disp;
+  taken_op.addr.displacement = disp + static_cast<int64_t>(instr->NumBytes());
   instr->operands.push_back(taken_op);
 
   instr->branch_taken_pc = static_cast<uint64_t>(
       static_cast<int64_t>(instr->next_pc) + disp);
 
-  // Not taken branch.
-  Operand not_taken_op;
-  not_taken_op.action = Operand::kActionRead;
-  not_taken_op.type = Operand::kTypeRegister;
-  not_taken_op.size = pc_width;
-  not_taken_op.reg.name = "NEXT_PC";
-  not_taken_op.reg.size = pc_width;
-  instr->operands.push_back(not_taken_op);
-
-  instr->branch_not_taken_pc = instr->next_pc;
+  DecodeFallThroughPC(instr, xedd);
 }
 
 // Decode a relative branch target.
@@ -492,11 +557,13 @@ static void DecodeRelativeBranch(Instruction *instr,
   // Taken branch.
   Operand taken_op;
   taken_op.action = Operand::kActionRead;
+  taken_op.action = Operand::kActionRead;
   taken_op.type = Operand::kTypeAddress;
   taken_op.size = pc_width;
-  taken_op.addr.base_reg.name = "NEXT_PC";
+  taken_op.addr.address_size = pc_width;
+  taken_op.addr.base_reg.name = "PC";
   taken_op.addr.base_reg.size = pc_width;
-  taken_op.addr.displacement = disp;
+  taken_op.addr.displacement = disp + static_cast<int64_t>(instr->NumBytes());
   instr->operands.push_back(taken_op);
 
   instr->branch_taken_pc = static_cast<uint64_t>(
@@ -598,7 +665,7 @@ void X86Arch::PrepareModule(llvm::Module *mod) const {
         case kArchAMD64_AVX:
         case kArchAMD64_AVX512:
           dl = "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
-          triple = "x86_64-pc-linux-gnu";
+          triple = "x86_64-unknown-linux-gnu";
           break;
         case kArchX86:
         case kArchX86_AVX:
@@ -631,8 +698,21 @@ void X86Arch::PrepareModule(llvm::Module *mod) const {
       }
       break;
   }
+
   mod->setDataLayout(dl);
   mod->setTargetTriple(triple);
+
+  // Go and remove compile-time attributes added into the semantics. These
+  // can screw up later compilation.
+  auto &context = mod->getContext();
+  for (llvm::Function &func : *mod) {
+    auto attribs = func.getAttributes();
+    attribs = attribs.removeAttribute(
+        context, llvm::AttributeSet::FunctionIndex, "target-features");
+    attribs = attribs.removeAttribute(
+        context, llvm::AttributeSet::FunctionIndex, "target-cpu");
+    func.setAttributes(attribs);
+  }
 }
 
 // Decode an instruction.
@@ -642,16 +722,18 @@ Instruction *X86Arch::DecodeInstruction(
   xed_decoded_inst_t xedd_;
   xed_decoded_inst_t *xedd = &xedd_;
   auto mode = 32 == address_size ? &kXEDState32 : &kXEDState64;
-
-  DecodeXED(xedd, mode, instr_bytes, address);
-
   auto instr = new Instruction;
+
+  if (!DecodeXED(xedd, mode, instr_bytes, address)) {
+    return instr;
+  }
+
   instr->arch_name = arch_name;
   instr->operand_size = xed_decoded_inst_get_operand_width(xedd);
   instr->function = InstructionFunctionName(xedd);
   instr->category = CreateCategory(xedd);
   instr->pc = address;
-  instr->next_pc = address + instr_bytes.size();
+  instr->next_pc = address + xed_decoded_inst_get_length(xedd);
 
   // Wrap an instruction in atomic begin/end if it accesses memory with RMW
   // semantics or with a LOCK prefix.
@@ -660,7 +742,7 @@ Instruction *X86Arch::DecodeInstruction(
     instr->is_atomic_read_modify_write = true;
   }
 
-  if (Instruction::kCategoryConditionalInterruptCall == instr->category) {
+  if (Instruction::kCategoryConditionalAsyncHyperCall == instr->category) {
     DecodeConditionalInterrupt(instr);
   }
 
@@ -673,6 +755,10 @@ Instruction *X86Arch::DecodeInstruction(
     if (XED_OPVIS_SUPPRESSED != xed_operand_operand_visibility(xedo)) {
       DecodeOperand(instr, xedd, xedo);
     }
+  }
+
+  if (instr->IsFunctionCall()) {
+    DecodeFallThroughPC(instr, xedd);
   }
 
   char buffer[256] = {'\0'};

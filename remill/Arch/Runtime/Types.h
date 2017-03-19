@@ -179,7 +179,7 @@ MAKE_VECTOR(double, float64, 4, 256, 32);
 MAKE_VECTOR(double, float64, 8, 512, 64);
 
 #define NumVectorElems(val) \
-    static_cast<size_t>(VectorType<decltype(val)>::kNumElems)
+    static_cast<addr_t>(VectorType<decltype(val)>::kNumElems)
 
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wunused-private-field"
@@ -204,9 +204,13 @@ static_assert(2 == sizeof(vec16_t),
               "Invalid structure packing of `vec16_t`.");
 
 union vec32_t final {
+  // Make this type look like an `[1 x i32]` to LLVM. This is important for
+  // the cross-block alias analysis performed by remill-opt, as it enables
+  // remill-opt to more easily handle false dependencies.
+  uint32v1_t dwords;
+
   uint8v4_t bytes;
   uint16v2_t words;
-  uint32v1_t dwords;
   float32v1_t floats;
 
   int8v4_t sbytes;
@@ -218,10 +222,14 @@ static_assert(4 == sizeof(vec32_t),
               "Invalid structure packing of `vec32_t`.");
 
 union vec64_t final {
+  // Make this type look like an `[1 x i64]` to LLVM. This is important for
+  // the cross-block alias analysis performed by remill-opt, as it enables
+  // remill-opt to more easily handle false dependencies.
+  uint64v1_t qwords;
+
   uint8v8_t bytes;
   uint16v4_t words;
   uint32v2_t dwords;
-  uint64v1_t qwords;
   float32v2_t floats;
   float64v1_t doubles;
 
@@ -237,11 +245,15 @@ static_assert(8 == sizeof(vec64_t),
               "Invalid structure packing of `vec64_t`.");
 
 union vec128_t final {
+  // Make this type look like an `[1 x i128]` to LLVM. This is important for
+  // the cross-block alias analysis performed by remill-opt, as it enables
+  // remill-opt to more easily handle false dependencies.
+  uint128v1_t dqwords;
+
   uint8v16_t bytes;
   uint16v8_t words;
   uint32v4_t dwords;
   uint64v2_t qwords;
-  uint128v1_t dqwords;
   float32v4_t floats;
   float64v2_t doubles;
 
@@ -411,6 +423,9 @@ template <typename T>
 struct BaseType {
   typedef T BT;
 };
+
+template <>
+struct BaseType<float80_t> : public BaseType<float64_t> {};
 
 template <typename T>
 struct BaseType<volatile T> : public BaseType<T> {};

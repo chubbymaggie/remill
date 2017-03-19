@@ -60,7 +60,7 @@ class Operand {
     Address(void);
     ~Address(void) = default;
 
-    Register segment_reg;
+    Register segment_base_reg;
     Register base_reg;
     Register index_reg;
     int64_t scale;
@@ -112,17 +112,47 @@ class Instruction {
     kCategoryIndirectFunctionCall,
     kCategoryFunctionReturn,
     kCategoryConditionalBranch,
-    kCategorySystemCall,
-    kCategorySystemReturn,
-    kCategoryConditionalInterruptCall,
-    kCategoryInterruptCall,
-    kCategoryInterruptReturn,
-    kCategoryReadCPUFeatures,
+    kCategoryAsyncHyperCall,
+    kCategoryConditionalAsyncHyperCall,
   } category;
 
   std::vector<Operand> operands;
 
   std::string Serialize(void) const;
+
+  inline bool IsControlFlow(void) const {
+    switch (category) {
+      case kCategoryInvalid:
+      case kCategoryNormal:
+      case kCategoryNoOp:
+        return false;
+      default:
+        return true;
+    }
+  }
+
+  inline bool IsFunctionCall(void) const {
+    switch (category) {
+      case kCategoryDirectFunctionCall:
+      case kCategoryIndirectFunctionCall:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  inline bool IsValid(void) const {
+    return kCategoryInvalid != category;
+  }
+
+  // Length, in bytes, of the instruction.
+  inline uint64_t NumBytes(void) const {
+    return next_pc - pc;
+  }
+
+  inline bool IsNoOp(void) const {
+    return kCategoryNoOp == category;
+  }
 
  private:
   friend class X86Arch;

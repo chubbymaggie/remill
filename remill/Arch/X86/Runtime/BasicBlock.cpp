@@ -10,16 +10,21 @@ extern "C" {
 // Method that will implement a basic block. We will clone this method for
 // each basic block in the code being lifted.
 [[gnu::used]]
-void __remill_basic_block(State &state, Memory &memory, addr_t curr_pc) {
+void __remill_basic_block(Memory &memory, State &state, addr_t curr_pc) {
 
   bool branch_taken = false;
+  addr_t zero = 0;
 
   // Note: These variables MUST be defined for all architectures.
   auto &STATE = state;
   auto &MEMORY = memory;
-  auto &PC = curr_pc;
-  auto &NEXT_PC = state.gpr.rip.IF_64BIT_ELSE(qword, dword);
+  auto &PC = state.gpr.rip.IF_64BIT_ELSE(qword, dword);
   auto &BRANCH_TAKEN = branch_taken;
+
+  // `PC` should already have the correct value, but it's nice to make sure
+  // that `curr_pc` is used throughout, as it helps with certain downstream
+  // uses to be able to depend on the optimizer not eliminating `curr_pc`.
+  PC = curr_pc;
 
   // We will reference these variables from the bitcode side of things so that,
   // given a decoded register name and an operation type (read or write),
@@ -111,6 +116,13 @@ void __remill_basic_block(State &state, Memory &memory, addr_t curr_pc) {
   auto &FS = state.seg.fs;
   auto &DS = state.seg.ds;
   auto &CS = state.seg.cs;
+
+  auto &SS_BASE = zero;
+  auto &ES_BASE = zero;
+  auto &GS_BASE = state.addr.gs_base.IF_64BIT_ELSE(qword, dword);
+  auto &FS_BASE = state.addr.fs_base.IF_64BIT_ELSE(qword, dword);
+  auto &DS_BASE = zero;
+  auto &CS_BASE = zero;
 
 #if HAS_FEATURE_AVX
 #if HAS_FEATURE_AVX512

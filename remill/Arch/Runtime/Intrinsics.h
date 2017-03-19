@@ -1,36 +1,28 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
 
-#ifndef REMILL_ARCH_SEMANTICS_INSTRINSICS_H_
-#define REMILL_ARCH_SEMANTICS_INSTRINSICS_H_
+#ifndef REMILL_ARCH_RUNTIME_INTRINSICS_H_
+#define REMILL_ARCH_RUNTIME_INTRINSICS_H_
 
 #include "remill/Arch/Runtime/Types.h"
+#include "remill/Arch/Runtime/HyperCall.h"
 
 struct IndirectBlock final {
   const uint64_t lifted_address;
-  void (* const lifted_func)(State &, Memory *, addr_t);
+  void (* const lifted_func)(Memory *, State &, addr_t);
 };
 
 // TODO(pag): Add a `lifted_address` field in here for extra cross-checking?
 struct NamedBlock final {
   const char * const name;
-  void (* const lifted_func)(State &, Memory *, addr_t);
+  void (* const lifted_func)(Memory *, State &, addr_t);
   void (* const native_func)(void);
 };
 
 extern "C" {
 
-extern const IndirectBlock __remill_indirect_blocks[];
-extern const NamedBlock __remill_exported_blocks[];
-extern const NamedBlock __remill_imported_blocks[];
-
 // The basic block "template".
 [[gnu::used]]
-void __remill_basic_block(State &state, Memory &memory, addr_t);
-
-// Address computation intrinsic. This is only used for non-zero
-// `address_space`d memory accesses.
-[[gnu::used, gnu::const]]
-extern addr_t __remill_compute_address(addr_t address, addr_t segment);
+void __remill_basic_block(Memory &memory, State &state, addr_t);
 
 // Memory read intrinsics.
 [[gnu::used, gnu::const]]
@@ -77,9 +69,6 @@ extern Memory *__remill_write_memory_f64(Memory *, addr_t, float64_t);
 extern Memory *__remill_write_memory_f80(Memory *, addr_t, float64_t);
 
 [[gnu::used, gnu::const]]
-extern bool __remill_undefined_bool(void);
-
-[[gnu::used, gnu::const]]
 extern uint8_t __remill_undefined_8(void);
 
 [[gnu::used, gnu::const]]
@@ -105,44 +94,23 @@ extern void __remill_defer_inlining(void);
 
 // Generic error.
 [[gnu::used]]
-extern void __remill_error(State &, Memory *, addr_t addr);
+extern void __remill_error(Memory *, State &, addr_t addr);
 
 // Control-flow intrinsics.
 [[gnu::used]]
-extern void __remill_function_call(State &, Memory *, addr_t addr);
+extern void __remill_function_call(Memory *, State &, addr_t addr);
 
 [[gnu::used]]
-extern void __remill_function_return(State &, Memory *, addr_t addr);
+extern void __remill_function_return(Memory *, State &, addr_t addr);
 
 [[gnu::used]]
-extern void __remill_jump(State &, Memory *, addr_t addr);
+extern void __remill_jump(Memory *, State &, addr_t addr);
 
 [[gnu::used]]
-extern void __remill_system_call(State &, Memory *, addr_t ret_addr);
+extern void __remill_async_hyper_call(Memory *, State &, addr_t ret_addr);
 
 [[gnu::used]]
-extern void __remill_system_return(State &, Memory *, addr_t addr);
-
-[[gnu::used]]
-extern void __remill_interrupt_call(State &, Memory *, addr_t ret_addr);
-
-[[gnu::used]]
-extern void __remill_interrupt_return(State &, Memory *, addr_t);
-
-// Transition to "native", unmodelled code from Remill-lifted code.
-[[gnu::used]]
-extern void __remill_detach(State &, Memory *, addr_t);
-
-// Transition from native code into Remill-lifted code.
-//
-// Note:  It is possible to transition between two independent Remill-lifted
-//        modules via a `__remill_detach` and `__remill_attach`.
-[[gnu::used]]
-extern void __remill_attach(void);
-
-//[[gnu::used]]
-//extern bool __remill_conditional_branch(
-//    bool condition, addr_t if_true, addr_t if_false);
+extern Memory *__remill_sync_hyper_call(Memory *, State &, SyncHyperCall::Name);
 
 // Memory barriers types, see: http://g.oswego.edu/dl/jmm/cookbook.html
 [[gnu::used, gnu::const]]
@@ -165,14 +133,6 @@ extern Memory *__remill_atomic_begin(Memory *);
 [[gnu::used, gnu::const]]
 extern Memory *__remill_atomic_end(Memory *);
 
-// Arch-specific feature lookup. Implemented as a pseudo control-flow
-// intrinsic.
-[[gnu::used]]
-extern void __remill_read_cpu_features(State &, Memory *, addr_t addr);
-
-[[gnu::used]]
-extern void __remill_intrinsics(void);
-
 }  // extern C
 
-#endif  // REMILL_ARCH_SEMANTICS_INSTRINSICS_H_
+#endif  // REMILL_ARCH_RUNTIME_INTRINSICS_H_

@@ -1,4 +1,4 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/* Copyright 2017 Peter Goodman (peter@trailofbits.com), all rights reserved. */
 
 #include "remill/Arch/Runtime/Intrinsics.h"
 #include "remill/Arch/Runtime/Operators.h"
@@ -7,6 +7,10 @@
 #include "remill/Arch/X86/Runtime/Types.h"
 #include "remill/Arch/X86/Runtime/Operators.h"
 
+#include <algorithm>
+#include <bitset>
+#include <fenv.h>
+#include <cmath>
 
 #define REG_IP state.gpr.rip.word
 #define REG_EIP state.gpr.rip.dword
@@ -86,14 +90,14 @@
 #define FLAG_OF state.aflag.of
 #define FLAG_DF state.aflag.df
 
-#define X87_ST0 state.st.element[0].val
-#define X87_ST1 state.st.element[1].val
-#define X87_ST2 state.st.element[2].val
-#define X87_ST3 state.st.element[3].val
-#define X87_ST4 state.st.element[4].val
-#define X87_ST5 state.st.element[5].val
-#define X87_ST6 state.st.element[6].val
-#define X87_ST7 state.st.element[7].val
+#define X87_ST0 state.st.elems[0].val
+#define X87_ST1 state.st.elems[1].val
+#define X87_ST2 state.st.elems[2].val
+#define X87_ST3 state.st.elems[3].val
+#define X87_ST4 state.st.elems[4].val
+#define X87_ST5 state.st.elems[5].val
+#define X87_ST6 state.st.elems[6].val
+#define X87_ST7 state.st.elems[7].val
 
 #define REG_SS state.seg.ss
 #define REG_ES state.seg.es
@@ -102,7 +106,34 @@
 #define REG_GS state.seg.gs
 #define REG_CS state.seg.cs
 
-#define INTERRUPT_VECTOR state.generic.interrupt_vector
+#define REG_SS_BASE 0
+#define REG_ES_BASE 0
+#define REG_DS_BASE 0
+#define REG_FS_BASE state.addr.fs_base
+#define REG_GS_BASE state.addr.gs_base
+#define REG_CS_BASE 0
+
+#define HYPER_CALL state.hyper_call
+#define INTERRUPT_VECTOR state.interrupt_vector
+
+namespace {
+// Takes the place of an unsupported instruction.
+DEF_SEM(HandleUnsupported) {
+  memory = __remill_sync_hyper_call(
+      memory, state, IF_64BIT_ELSE(SyncHyperCall::kAMD64EmulateInstruction,
+                                   SyncHyperCall::kX86EmulateInstruction));
+}
+
+// Takes the place of an invalid instruction.
+DEF_SEM(HandleInvalidInstruction) {
+    HYPER_CALL = AsyncHyperCall::kInvalidInstruction;
+}
+
+}  // namespace
+
+// Takes the place of an unsupported instruction.
+DEF_ISEL(UNSUPPORTED_INSTRUCTION) = HandleUnsupported;
+DEF_ISEL(INVALID_INSTRUCTION) = HandleInvalidInstruction;
 
 #include "remill/Arch/X86/Semantics/FLAGS.cpp"
 #include "remill/Arch/X86/Semantics/BINARY.cpp"
@@ -120,11 +151,16 @@
 #include "remill/Arch/X86/Semantics/MMX.cpp"
 #include "remill/Arch/X86/Semantics/NOP.cpp"
 #include "remill/Arch/X86/Semantics/POP.cpp"
+#include "remill/Arch/X86/Semantics/PREFETCH.cpp"
 #include "remill/Arch/X86/Semantics/PUSH.cpp"
 #include "remill/Arch/X86/Semantics/ROTATE.cpp"
+#include "remill/Arch/X86/Semantics/RTM.cpp"
+#include "remill/Arch/X86/Semantics/SEMAPHORE.cpp"
 #include "remill/Arch/X86/Semantics/SHIFT.cpp"
 #include "remill/Arch/X86/Semantics/SSE.cpp"
 #include "remill/Arch/X86/Semantics/STRINGOP.cpp"
+#include "remill/Arch/X86/Semantics/SYSCALL.cpp"
+#include "remill/Arch/X86/Semantics/SYSTEM.cpp"
 #include "remill/Arch/X86/Semantics/UNCOND_BR.cpp"
 #include "remill/Arch/X86/Semantics/XOP.cpp"
 #include "remill/Arch/X86/Semantics/X87.cpp"

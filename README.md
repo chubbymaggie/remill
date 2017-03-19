@@ -36,7 +36,7 @@ We are actively working on porting Remill to macOS.
 | [CMake](https://cmake.org/) | 3.2+ |
 | [Google Log](https://github.com/google/glog) | 0.3.3 |
 | [Google Test](https://github.com/google/googletest) | 1.6.0 |
-| [Google Protobuf](https://github.com/google/protobuf) | 2.4.1 |
+| [Google Protobuf](https://github.com/google/protobuf) | 2.6.1 |
 | [LLVM](http://llvm.org/) | 3.9 |
 | [Clang](http://clang.llvm.org/) | 3.9 |
 | [Intel XED](https://software.intel.com/en-us/articles/xed-x86-encoder-decoder-software-library) | 2016-02-02 |
@@ -44,7 +44,7 @@ We are actively working on porting Remill to macOS.
 | [Python Package Index](https://pypi.python.org/pypi) | Latest |
 | [python-magic](https://pypi.python.org/pypi/python-magic) | Latest |
 | Unzip | Latest |
-| [python-protobuf](https://pypi.python.org/pypi/protobuf) | 2.4.1 |
+| [python-protobuf](https://pypi.python.org/pypi/protobuf) | 2.6.1 |
 | [Binary Ninja](https://binary.ninja) | Latest |
 | [IDA Pro](https://www.hex-rays.com/products/ida) | 6.7+ |
 
@@ -69,11 +69,24 @@ sudo apt-get install \
      python2.7 python-pip \
      g++-multilib \
      unzip \
-     software-properties-common
+     software-properties-common \
+     realpath
 
 sudo pip install --upgrade pip
 
-sudo pip install python-magic 'protobuf==2.4.1'
+sudo pip install python-magic 'protobuf==2.6.1'
+```
+
+##### Using IDA on 64 bit Ubuntu
+
+If your IDA install does not use the system's Python, you can add the `protobuf` library manually to IDA's zip of modules.
+
+```
+# Python module dir is generally in /usr/lib or /usr/local/lib
+touch /path/to/python2.7/dist-packages/google/__init__.py
+cd /path/to/lib/python2.7/dist-packages/              
+sudo zip -rv /path/to/ida-6.X/python/lib/python27.zip google/
+sudo chown your_user:your_user /home/taxicat/ida-6.7/python/lib/python27.zip
 ```
 
 ##### Upgrade CMake (Ubuntu 14.04)
@@ -87,26 +100,14 @@ sudo apt-get upgrade
 sudo apt-get install cmake
 ```
 
-##### Install LLVM 3.9
+#### On OS X
 
-> **Note:** Installing LLVM on Ubuntu in such a way that it works for CMake can be tricky. We use LLVM 3.9. What I have found works is to start by removing all versions of all LLVM-related packages. Then, add in the official LLVM repositories (as shown below). Finally, install `llvm-3.9-dev`. If you also need older versions of LLVM-related tools, then re-install them after installing LLVM 3.9.
+##### Install Dependencies
 
-```shell
-UBUNTU_RELEASE=`lsb_release -sc`
-
-wget -qO - http://apt.llvm.org/llvm-snapshot.gpg.key | sudo apt-key add -
-
-sudo add-apt-repository "deb http://apt.llvm.org/${UBUNTU_RELEASE}/ llvm-toolchain-${UBUNTU_RELEASE} main"
-sudo add-apt-repository "deb http://apt.llvm.org/${UBUNTU_RELEASE}/ llvm-toolchain-${UBUNTU_RELEASE}-3.8 main"
-sudo add-apt-repository "deb http://apt.llvm.org/${UBUNTU_RELEASE}/ llvm-toolchain-${UBUNTU_RELEASE}-3.9 main"
-
-sudo apt-get update
-sudo apt-get install llvm-3.9-dev clang-3.9
 ```
-
-#### On macOS (experimental)
-
-Instructions for building on macOS are not yet available.
+brew install glog
+brew install protobuf
+```
 
 ### Step 2: Clone and Enter the Repository
 
@@ -120,54 +121,16 @@ git clone git@github.com:trailofbits/remill.git
 cd remill
 ```
 
-### Step 3: Install Intel XED
-
-#### On Linux and macOS
-
-This script will unpack and install Intel XED. It will require `sudo`er permissions. The XED library will be installed into `/usr/local/lib`, and the headers will be installed into `/usr/local/include/intel`.
-
+#### Run the Build Script
 ```shell
-./scripts/unix/install_xed.sh
+./build.sh
 ```
 
-### Step 4: Compile Protocol Buffers
-
-Remill represents disassembled binaries using a [protocol buffer format](docs/CFG_FORMAT.md). This step compiles that format into files that can be used by `remill-lift`.
-
-#### On Linux and macOS
+### Step 3: Install the disassembler
 
 ```shell
-./scripts/unix/compile_protobufs.sh
+sudo python tools/setup.py install
 ```
-
-### Step 5: Run a Basic Build
-
-#### Create a build location
-
-```shell
-mkdir build
-cd build
-```
-
-#### Compile the code
-
-Now the code must be compiled. It is best to manually specify the paths to the LLVM 3.9 and Clang 3.9 binaries. By default, Remill installs its files into `/usr/local`. An alternative installation directory prefix can be specified with `-DCMAKE_INSTALL_PREFIX=/path/to/prefix`.
-
-```shell
-cmake \
--DCMAKE_C_COMPILER=/path/to/clang-3.9 \
--DCMAKE_CXX_COMPILER=/path/to/clang++-3.9 \
--DCMAKE_LLVM_LINK=/path/to/llvm-link-3.9 \
-..
-
-make semantics
-make all
-sudo make install
-```
-
- > **Note 1:** The `semantics` target must be built before `install`ing.
-
- > **Note 2:** If you are implementing new instruction semantics, then the `semantics` target can be rebuilt and should take effect, even without re`install`ing. 
 
 ## Building and Running the Test Suite
 
@@ -190,4 +153,20 @@ This script will build and install the Google Test framework. It will request ad
 
 ## Try it Out
 
-**TODO(pag):** Make `remill-lift`.
+If you have a 64 bit dll, you can get started with the following commands. First, you recover control flow graph information using `remill-disass`, this can use either IDA Pro or Binary Ninja as the disassembler.
+
+```shell
+remill-disass --disassembler /path/to/ida/idal64 --arch amd64 --output target.cfg --binary libsomething.dll
+```
+
+Once you have the control flow graph information, you can lift the target binary using `remill-lift`.
+
+```shell
+remill-lift --arch_in amd64 --os_in linux --cfg target.cfg --bc_out target.bc
+```
+
+When the bitcode has been recovered by `remill-lift`, it is a good idea to optimize it using `remill-opt`.
+
+```shell
+remill-opt --bc_in target.bc --bc_out opt_target.bc
+```

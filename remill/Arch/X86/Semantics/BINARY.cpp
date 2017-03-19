@@ -57,25 +57,6 @@ DEF_SEM(ADDSD, D dst, S1 src1, S2 src2) {
   FWriteV64(dst, res);  // SSE: Writes to XMM, AVX: Zero-extends XMM.
 }
 
-// Atomic fetch-add.
-template <typename D1, typename S1, typename D2, typename S2>
-DEF_SEM(XADD, D1 dst1, S1 src1, D2 dst2, S2 src2) {
-
-  // Our lifter only injects atomic begin/end around memory access instructions
-  // but this instruction is a full memory barrier, even when registers are
-  // accessed.
-  if (IsRegister(dst1)) {
-    BarrierStoreLoad();
-  }
-
-  auto lhs = Read(src1);
-  auto rhs = Read(src2);
-  auto sum = UAdd(lhs, rhs);
-  WriteZExt(dst1, sum);
-  WriteZExt(dst2, lhs);
-  WriteFlagsAddSub<tag_add>(state, lhs, rhs, sum);
-}
-
 }  // namespace
 
 DEF_ISEL(ADD_MEMb_IMMb_80r0) = ADD<M8W, M8, I8>;
@@ -96,11 +77,6 @@ DEF_ISEL_RnW_Rn_Mn(ADD_GPRv_MEMv, ADD);
 DEF_ISEL_RnW_Rn_Rn(ADD_GPRv_GPRv_03, ADD);
 DEF_ISEL(ADD_AL_IMMb) = ADD<R8W, R8, I8>;
 DEF_ISEL_RnW_Rn_In(ADD_OrAX_IMMz, ADD);
-
-DEF_ISEL(XADD_MEMb_GPR8) = XADD<M8W, M8, R8W, R8>;
-DEF_ISEL(XADD_GPR8_GPR8) = XADD<R8W, R8, R8W, R8>;
-DEF_ISEL_MnW_Mn_RnW_Rn(XADD_MEMv_GPRv, XADD);
-DEF_ISEL_RnW_Rn_RnW_Rn(XADD_GPRv_GPRv, XADD);
 
 DEF_ISEL(ADDPS_XMMps_MEMps) = ADDPS<V128W, V128, MV128>;
 DEF_ISEL(ADDPS_XMMps_XMMps) = ADDPS<V128W, V128, V128>;
@@ -247,14 +223,14 @@ template <typename T, typename U, typename V>
 ALWAYS_INLINE static
 void WriteFlagsMul(State &state, T lhs, T rhs, U res, V res_trunc) {
   const auto new_of = Overflow<tag_mul>::Flag(lhs, rhs, res);
-  state.aflag.cf = new_of;
-  state.aflag.pf = __remill_undefined_bool();
-  state.aflag.af = __remill_undefined_bool();
-  state.aflag.zf = __remill_undefined_bool();
-  state.aflag.sf = std::is_signed<T>::value ?
+  FLAG_CF = new_of;
+  FLAG_PF = BUndefined();
+  FLAG_AF = BUndefined();
+  FLAG_ZF = BUndefined();
+  FLAG_SF = std::is_signed<T>::value ?
       SignFlag(res_trunc) :
-      __remill_undefined_bool();
-  state.aflag.of = new_of;
+      BUndefined();
+  FLAG_OF = new_of;
 }
 
 // 2-operand and 3-operand multipliers truncate their results down to their
@@ -279,7 +255,7 @@ DEF_SEM(MULX, D dst1, D dst2, const S2 src2) {
   // Kind of tricky: in 64-bit, for a 32-bit MULX, we read RDX, but we need
   // to truncate it down into EDX before extending it back up to "double" its
   // width.
-  auto rhs = ZExt(TruncTo<S2>(Read(REG_RDX)));
+  auto rhs = ZExt(TruncTo<S2>(Read(REG_XDX)));
   auto res = UMul(lhs, rhs);
   auto res_high = UShr(res, ZExt(BitSizeOf(src2)));
 
@@ -307,7 +283,7 @@ DEF_SEM(MULX, D dst1, D dst2, const S2 src2) {
 MAKE_MULxax(al, REG_AL, REG_AL, REG_AH)
 MAKE_MULxax(ax, REG_AX, REG_AX, REG_DX)
 MAKE_MULxax(eax, REG_EAX, REG_XAX, REG_XDX)
-MAKE_MULxax(rax, REG_RAX, REG_RAX, REG_RDX)
+IF_64BIT(MAKE_MULxax(rax, REG_RAX, REG_RAX, REG_RDX))
 
 #undef MAKE_MULxax
 
@@ -442,10 +418,11 @@ namespace {
       auto rem_trunc = Trunc(rem); \
       if (quot != ZExt(quot_trunc)) { \
         StopFailure(); \
+      } else { \
+        WriteZExt(dst1, quot_trunc); \
+        WriteZExt(dst2, rem_trunc); \
+        ClearArithFlags(); \
       } \
-      WriteZExt(dst1, quot_trunc); \
-      WriteZExt(dst2, rem_trunc); \
-      ClearArithFlags(); \
     }
 
 MAKE_DIVxax(ax, REG_AL, REG_AH, REG_AL, REG_AH)
@@ -471,10 +448,11 @@ IF_64BIT(MAKE_DIVxax(rdxrax, REG_RAX, REG_RDX, REG_RAX, REG_RDX))
       auto rem_trunc = Trunc(rem); \
       if (quot != SExt(quot_trunc)) { \
         StopFailure(); \
+      } else { \
+        WriteZExt(dst1, Unsigned(quot_trunc)); \
+        WriteZExt(dst2, Unsigned(rem_trunc)); \
+        ClearArithFlags(); \
       } \
-      WriteZExt(dst1, Unsigned(quot_trunc)); \
-      WriteZExt(dst2, Unsigned(rem_trunc)); \
-      ClearArithFlags(); \
     }
 
 MAKE_IDIVxax(ax, REG_AL, REG_AH, REG_AL, REG_AH)

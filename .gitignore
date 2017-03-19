@@ -1,9 +1,21 @@
-# Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved.
+# Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved.
+
+install_manifest.txt
+Makefile
 
 third_party/*
 build/*
 generated/*
 gtest_build/*
+
+tools/build/*
+tools/dist/*
+tools/remill_disass.egg-info/*
+tools/remill_disass/CFG.proto
+tools/remill_disass/CFG_pb2.py
+
+dist/*
+remill_disass.egg-info/*
 
 *.o
 *.ll
@@ -39,3 +51,11 @@ gtest_build/*
 *.app
 
 *.pyc
+
+# IDA Pro
+*.idb
+*.i64
+*.nam
+*.id0
+*.id1
+*.til

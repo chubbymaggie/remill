@@ -33,10 +33,14 @@ extern "C" const NamedBlock __remill_imported_blocks[1] = {};
 //        addresses taken, and so this prevents dead argument elimination.
 extern "C" void __remill_mark_as_used(const void *);
 
+extern "C" void __remill_basic_block(Memory &, State &, addr_t);
+
 // This is just a hack to make sure all these functions appear in the bitcode
 // file!
 [[gnu::used]]
- extern "C" void __remill_intrinsics(void) {
+extern "C" void __remill_intrinsics(void) {
+
+  USED(__remill_basic_block);
 
   USED(__remill_read_memory_8);
   USED(__remill_read_memory_16);
@@ -64,8 +68,6 @@ extern "C" void __remill_mark_as_used(const void *);
   USED(__remill_atomic_begin);
   USED(__remill_atomic_end);
 
-  USED(__remill_compute_address);  // Used for segmented addresses.
-
   USED(__remill_defer_inlining);
 
   USED(__remill_error);
@@ -73,24 +75,16 @@ extern "C" void __remill_mark_as_used(const void *);
   USED(__remill_function_call);
   USED(__remill_function_return);
   USED(__remill_jump);
-  USED(__remill_system_call);
-  USED(__remill_system_return);
-  USED(__remill_interrupt_call);
-  USED(__remill_interrupt_return);
-//  USED(__remill_conditional_branch);
 
-//  USED(__remill_attach);
-  USED(__remill_detach);
+  USED(__remill_async_hyper_call);
+  USED(__remill_sync_hyper_call);
 
-  USED(__remill_undefined_bool);
   USED(__remill_undefined_8);
   USED(__remill_undefined_16);
   USED(__remill_undefined_32);
   USED(__remill_undefined_64);
   USED(__remill_undefined_f32);
   USED(__remill_undefined_f64);
-
-  USED(__remill_read_cpu_features);
 }
 
 #endif  // REMILL_ARCH_SEMANTICS_INSTRINSICS_CPP_

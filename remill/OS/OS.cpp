@@ -7,12 +7,11 @@
 namespace remill {
 
 OSName GetOSName(std::string name) {
-  if (name == "mac") {
+  if (name == "macos") {
     return kOSmacOS;
   } else if (name == "linux") {
     return kOSLinux;
   } else {
-    LOG(FATAL) << "Unsupported operating system: " << name;
     return kOSInvalid;
   }
 }

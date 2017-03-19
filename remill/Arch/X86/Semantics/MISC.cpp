@@ -13,7 +13,8 @@ DEF_SEM(LEA, D dst, S src) {
 DEF_SEM(LEAVE_16BIT) {
   addr_t op_size = 2;
   addr_t link_pointer = Read(REG_XBP);
-  addr_t base_pointer = Read(ReadPtr<addr_t>(link_pointer _IF_32BIT(REG_SS)));
+  addr_t base_pointer = Read(
+      ReadPtr<addr_t>(link_pointer _IF_32BIT(REG_SS_BASE)));
   Write(REG_XBP, base_pointer);
   Write(REG_XSP, UAdd(link_pointer, op_size));
 }
@@ -22,7 +23,8 @@ template <typename T>
 DEF_SEM(LEAVE_FULL) {
   addr_t op_size = TruncTo<addr_t>(sizeof(T));
   addr_t link_pointer = Read(REG_XBP);
-  addr_t base_pointer = Read(ReadPtr<addr_t>(link_pointer _IF_32BIT(REG_SS)));
+  addr_t base_pointer = Read(
+      ReadPtr<addr_t>(link_pointer _IF_32BIT(REG_SS_BASE)));
   Write(REG_XBP, base_pointer);
   Write(REG_XSP, UAdd(link_pointer, op_size));
 }
@@ -56,14 +58,15 @@ DEF_SEM(ENTER, I16 src1, I8 src2) {
   // Detect failure. This should really happen at the end of `ENTER` but we
   // do it here. This is why `frame_temp` is created before the `PUSH` of
   // `RBP`, but displaced to mimic the `PUSH`.
-  Write(WritePtr<T>(next_xsp _IF_32BIT(REG_SS)),
-        Read(ReadPtr<T>(next_xsp _IF_32BIT(REG_SS))));
+  Write(WritePtr<T>(next_xsp _IF_32BIT(REG_SS_BASE)),
+        Read(ReadPtr<T>(next_xsp _IF_32BIT(REG_SS_BASE))));
 
   // Push `XBP`.
   addr_t xbp_temp = Read(REG_XBP);
   addr_t xsp_after_push = USub(xsp_temp, op_size);
   Write(REG_XSP, xsp_after_push);
-  Write(WritePtr<T>(xsp_after_push _IF_32BIT(REG_SS)), TruncTo<T>(xbp_temp));
+  Write(WritePtr<T>(xsp_after_push _IF_32BIT(REG_SS_BASE)),
+        TruncTo<T>(xbp_temp));
   xsp_temp = xsp_after_push;
 
   if (nesting_level) {
@@ -74,15 +77,15 @@ DEF_SEM(ENTER, I16 src1, I8 src2) {
 
         // Copy the display entry to the stack.
         xsp_after_push = USub(xsp_temp, op_size);
-        Write(WritePtr<T>(xsp_after_push _IF_32BIT(REG_SS)),
-              Read(ReadPtr<T>(xbp_temp _IF_32BIT(REG_SS))));
+        Write(WritePtr<T>(xsp_after_push _IF_32BIT(REG_SS_BASE)),
+              Read(ReadPtr<T>(xbp_temp _IF_32BIT(REG_SS_BASE))));
         xsp_temp = xsp_after_push;
       }
     }
 
     xsp_temp = xsp_after_push;
     xsp_after_push = USub(xsp_temp, op_size);
-    Write(WritePtr<addr_t>(xsp_after_push _IF_32BIT(REG_SS)), frame_temp);
+    Write(WritePtr<addr_t>(xsp_after_push _IF_32BIT(REG_SS_BASE)), frame_temp);
     xsp_temp = xsp_after_push;
   }
 
@@ -90,6 +93,36 @@ DEF_SEM(ENTER, I16 src1, I8 src2) {
   Write(REG_XSP, USub(xsp_temp, alloc_size));
 }
 
+DEF_SEM(DoNothing) {}
+
+DEF_SEM(DoCLFLUSH_MEMmprefetch, M8) {}
+
+
+// Good reference for memory barriers and their relationships to instructions:
+// http://g.oswego.edu/dl/jmm/cookbook.html
+
+DEF_SEM(DoMFENCE) {
+  BarrierStoreLoad();
+}
+
+DEF_SEM(DoSFENCE) {
+  BarrierStoreStore();
+}
+
+DEF_SEM(DoLFENCE) {
+  BarrierLoadLoad();
+}
+
+DEF_SEM(DoXLAT) {
+  addr_t base = Read(REG_XBX);
+  addr_t offset = ZExtTo<addr_t>(Read(REG_AL));
+  Write(REG_AL, Read(
+      ReadPtr<uint8_t>(UAdd(base, offset) _IF_32BIT(REG_DS_BASE))));
+}
+
+DEF_SEM(DoCPUID) {
+  memory = __remill_sync_hyper_call(memory, state, SyncHyperCall::kX86CPUID);
+}
 }  // namespace
 
 DEF_ISEL(ENTER_IMMw_IMMb_16) = ENTER<uint16_t>;
@@ -97,36 +130,24 @@ IF_32BIT(DEF_ISEL(ENTER_IMMw_IMMb_32) = ENTER<uint32_t>;)
 IF_64BIT(DEF_ISEL(ENTER_IMMw_IMMb_64) = ENTER<uint64_t>;)
 
 // A `NOP` with a `REP` prefix for hinting. Used for busy-wait loops.
-DEF_ISEL_SEM(PAUSE) {}
+DEF_ISEL(PAUSE) = DoNothing;
 
 // A kind of NOP.
-DEF_ISEL_SEM(CLFLUSH_MEMmprefetch, M8) {}
+DEF_ISEL(CLFLUSH_MEMmprefetch) = DoCLFLUSH_MEMmprefetch;
 
-// Good reference for memory barriers and their relationships to instructions:
-// http://g.oswego.edu/dl/jmm/cookbook.html
+DEF_ISEL(MFENCE) = DoMFENCE;
 
-DEF_ISEL_SEM(MFENCE) {
-  BarrierStoreLoad();
-}
+DEF_ISEL(SFENCE) = DoSFENCE;
 
-DEF_ISEL_SEM(SFENCE) {
-  BarrierStoreStore();
-}
+DEF_ISEL(LFENCE) = DoLFENCE;
 
-DEF_ISEL_SEM(LFENCE) {
-  BarrierLoadLoad();
-}
+DEF_ISEL(XLAT) = DoXLAT;
 
-DEF_ISEL_SEM(XLAT) {
-  addr_t base = Read(REG_XBX);
-  addr_t offset = ZExtTo<addr_t>(Read(REG_AL));
-  Write(REG_AL, Read(ReadPtr<uint8_t>(UAdd(base, offset) _IF_32BIT(REG_DS))));
-}
+DEF_ISEL(CPUID) = DoCPUID;
 
-// Implemented via the `__remill_read_cpu_features` intrinsic.
-DEF_ISEL_SEM(CPUID) {}
+DEF_ISEL(UD2) = DoNothing;
 
-DEF_ISEL_SEM(UD2) {}
+DEF_ISEL(HLT) = DoNothing;
 
 /*
 230 INVPCID INVPCID_GPR64_MEMdq MISC INVPCID INVPCID ATTRIBUTES: NOTSX RING0

@@ -82,6 +82,7 @@ TEST_FUNC(instr_name, num_args): ; \
  */
 #ifdef IN_TEST_GENERATOR
 # define TEST_END \
+    int3 ; \
     6: \
     .cfi_endproc ; \
     .section "__x86_test_table", "a" ; \
@@ -113,11 +114,6 @@ TEST_FUNC(instr_name, num_args): ; \
     .quad 0 __VA_ARGS__ ; \
     .text ;
 
-#define TEST_USE_X87_MMX \
-    .section "__x86_test_table", "a" ; \
-    .quad 1 ; \
-    .text ;
-
 /* Defines the possible inputs to provide test. We add an extra 3 null inputs
  * at the end so that we can purposely 'overflow' when accessing the array so
  * that we can always specify 3 inputs, even if the program uses fewer. */
@@ -143,6 +139,22 @@ TEST_FUNC(instr_name, num_args): ; \
 
 #endif  /* 64 == ADDRESS_SIZE_BITS */
 
+#ifdef __APPLE__
+# define TEST_BEGIN_MEM_64(instr_name, num_args) \
+      .macro IGNORE_ ## instr_name ## __LINE__
+# define TEST_END_MEM_64 \
+      .endm ;
+# define TEST_BEGIN_MEM(instr_name, num_args) \
+      .macro IGNORE_ ## instr_name ## __LINE__
+# define TEST_END_MEM \
+      .endm ;
+#else
+# define TEST_BEGIN_MEM TEST_BEGIN
+# define TEST_END_MEM TEST_END
+# define TEST_BEGIN_MEM_64 TEST_BEGIN_64
+# define TEST_END_MEM_64 TEST_END_64
+#endif
+
     .file __FILE__ ;
     .intel_syntax noprefix ;
 
@@ -158,12 +170,22 @@ TEST_FUNC(instr_name, num_args): ; \
 
     .data
     .align 16
+SYMBOL(fpu_cwd):
+    .long 0x27F  /* Default is 0x37F */
+
+    .align 16
 SYMBOL(vec_data):
     .long 0x41414141, 0xabababab, 0xcdcdcdcd, 0xefefefef
     .long 0x29292929, 0x38383838, 0x47474747, 0x56565656
     .long 0x37373737, 0x82828282, 0x1a1a1a1a, 0x2b2b2b2b
     .long 0x96969696, 0x35353535, 0xaeaeaeae, 0xc4c4c4c4
     .long 0x3d3d3d3d, 0x21212121, 0x11223344, 0x55667788
+    .long 0x00414243, 0x41004243, 0x41420043, 0x41424300
+    .long 0x00abcdef, 0xab00cdef, 0xabcd00ef, 0xabcdef00
+    .long 0x00001111, 0x22222222, 0x33333333, 0x44444444
+    .long 0xaaaa0000, 0xbbbbbbbb, 0xcccccccc, 0xdddddddd
+    .long 0x55555555, 0x00006666, 0x77777777, 0x77777777
+    .long 0xabababab, 0xcdcd0000, 0xefefefef, 0x12121212
 
 // Set all bits in a vector.
 #if HAS_FEATURE_AVX
@@ -176,6 +198,7 @@ SYMBOL(vec_data):
      * `gTestToRun` pointer.
      */
     .text
+    .extern SYMBOL(__remill_detach)
     .align 16
     .globl SYMBOL(DoInvokeTestCase)
 SYMBOL(DoInvokeTestCase):
@@ -204,12 +227,20 @@ SYMBOL(DoInvokeTestCase):
     fldz
     fninit
 
+    /* Change the precision to double precision (as opposed to the default
+     * extended precision) */
+    fldcw [RIP + SYMBOL(fpu_cwd)]
+
     /* Set the bits of some of the vector regs to 1. This makes it easier to
      * detect certain zeroing behavior. */
     SET_VEC(0)
     SET_VEC(1)
     SET_VEC(2)
     SET_VEC(3)
+    SET_VEC(4)
+    SET_VEC(5)
+    SET_VEC(6)
+    SET_VEC(7)
 
     xchg RSP, [RIP + SYMBOL(gStackSwitcher)]  /* Switch onto recording stack. */
 
@@ -270,6 +301,7 @@ SYMBOL(__x86_save_state_after):
 # define AFTER_TEST_CASE
 # include "generated/Arch/X86/SaveState.S"
     xchg RSP, [RIP + SYMBOL(gStackSwitcher)]  /* Return to the normal stack. */
+    fninit  /* Go back to a sane FPU */
     ret
     .cfi_endproc
 # undef STATE_PTR
@@ -293,9 +325,6 @@ SYMBOL(__x86_test_table_begin):
 /* For argument register and return register definitions. */
 #include "tests/X86/ABI.S"
 
-#define APPLE_SAFE_TESTS (!defined(__APPLE__) || 64 == ADDRESS_SIZE_BITS)
-
-
 /* Bring in the data transfer tests. These basically HAVE to pass before
  * anything else can ;-)  */
 #include "tests/X86/DATAXFER/MOV.S"
@@ -317,15 +346,22 @@ SYMBOL(__x86_test_table_begin):
 
 /* Bring in the rest of the semantic tests. */
 
-#include "tests/X86/MMX/PADD.S"
-#include "tests/X86/MMX/PSUB.S"
+#include "tests/X86/MMX/INPUTS.S"
 #include "tests/X86/MMX/MISC.S"
 #include "tests/X86/MMX/PACKSS.S"
+#include "tests/X86/MMX/PADD.S"
 #include "tests/X86/MMX/PCMP.S"
+#include "tests/X86/MMX/PEXTR.S"
+#include "tests/X86/MMX/PINSRW.S"
+#include "tests/X86/MMX/PMOV.S"
 #include "tests/X86/MMX/PMUL.S"
-#include "tests/X86/MMX/PUNPCK.S"
-#include "tests/X86/MMX/PSRL.S"
+#include "tests/X86/MMX/PSADBW.S"
+#include "tests/X86/MMX/PSHUF.S"
+#include "tests/X86/MMX/PSIGN.S"
 #include "tests/X86/MMX/PSLL.S"
+#include "tests/X86/MMX/PSRL.S"
+#include "tests/X86/MMX/PSUB.S"
+#include "tests/X86/MMX/PUNPCK.S"
 
 #include "tests/X86/BINARY/ADC.S"
 #include "tests/X86/BINARY/ADD.S"
@@ -354,13 +390,17 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/BINARY/SUBPS.S"
 #include "tests/X86/BINARY/SUBSD.S"
 #include "tests/X86/BINARY/SUBSS.S"
-#include "tests/X86/BINARY/XADD.S"
 
+#include "tests/X86/BITBYTE/BSF.S"
+#include "tests/X86/BITBYTE/BSR.S"
+#include "tests/X86/BITBYTE/BSWAP.S"
 #include "tests/X86/BITBYTE/BT.S"
 #include "tests/X86/BITBYTE/BTC.S"
 #include "tests/X86/BITBYTE/BTR.S"
 #include "tests/X86/BITBYTE/BTS.S"
+#include "tests/X86/BITBYTE/LZCNT.S"
 #include "tests/X86/BITBYTE/SETcc.S"
+#include "tests/X86/BITBYTE/TZCNT.S"
 
 #include "tests/X86/CMOV/CMOVB.S"
 #include "tests/X86/CMOV/CMOVBE.S"
@@ -384,10 +424,22 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/CONVERT/CDQE.S"
 #include "tests/X86/CONVERT/CQO.S"
 #include "tests/X86/CONVERT/CVTDQ2PD.S"
+#include "tests/X86/CONVERT/CVTDQ2PS.S"
+#include "tests/X86/CONVERT/CVTPD2DQ.S"
+#include "tests/X86/CONVERT/CVTPD2PS.S"
 #include "tests/X86/CONVERT/CVTPI2PD.S"
 #include "tests/X86/CONVERT/CVTPI2PS.S"
+#include "tests/X86/CONVERT/CVTPS2DQ.S"
+#include "tests/X86/CONVERT/CVTPS2PD.S"
+#include "tests/X86/CONVERT/CVTSD2SI.S"
+#include "tests/X86/CONVERT/CVTSD2SS.S"
+#include "tests/X86/CONVERT/CVTSI2SD.S"
+#include "tests/X86/CONVERT/CVTSI2SS.S"
+#include "tests/X86/CONVERT/CVTSS2SD.S"
+#include "tests/X86/CONVERT/CVTSS2SI.S"
 #include "tests/X86/CONVERT/CVTTPD2DQ.S"
 #include "tests/X86/CONVERT/CVTTPS2DQ.S"
+#include "tests/X86/CONVERT/CVTTSD2SI.S"
 #include "tests/X86/CONVERT/CVTTSS2SI.S"
 #include "tests/X86/CONVERT/CWD.S"
 #include "tests/X86/CONVERT/CWDE.S"
@@ -404,19 +456,21 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/MISC/LEAVE.S"
 #include "tests/X86/MISC/XLAT.S"
 
+#include "tests/X86/POP/POP.S"
+#include "tests/X86/POP/POPF.S"
 
-#if APPLE_SAFE_TESTS
-# include "tests/X86/POP/POP.S"
-# include "tests/X86/POP/POPF.S"
-
-# include "tests/X86/PUSH/PUSH.S"
-# include "tests/X86/PUSH/PUSHF.S"
-#endif  // APPLE_SAFE_TESTS
+#include "tests/X86/PUSH/PUSH.S"
+#include "tests/X86/PUSH/PUSHF.S"
 
 #include "tests/X86/ROTATE/RCL.S"
 #include "tests/X86/ROTATE/RCR.S"
 #include "tests/X86/ROTATE/ROL.S"
 #include "tests/X86/ROTATE/ROR.S"
+
+#include "tests/X86/SEMAPHORE/CMPXCHG.S"
+#include "tests/X86/SEMAPHORE/CMPXCHG16B.S"
+#include "tests/X86/SEMAPHORE/CMPXCHG8B.S"
+#include "tests/X86/SEMAPHORE/XADD.S"
 
 #include "tests/X86/SHIFT/SAR.S"
 #include "tests/X86/SHIFT/SHL.S"
@@ -424,22 +478,31 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/SHIFT/SHR.S"
 #include "tests/X86/SHIFT/SHRD.S"
 
+#include "tests/X86/SSE/CMPSS.S"
 #include "tests/X86/SSE/COMISD.S"
 #include "tests/X86/SSE/COMISS.S"
+#include "tests/X86/SSE/PCMPISTRI.S"
+#include "tests/X86/SSE/PSHUFD.S"
 #include "tests/X86/SSE/UCOMISD.S"
 #include "tests/X86/SSE/UCOMISS.S"
 
+#include "tests/X86/STRINGOP/CMPS.S"
+#include "tests/X86/STRINGOP/LODS.S"
+#include "tests/X86/STRINGOP/MOVS.S"
+#include "tests/X86/STRINGOP/SCAS.S"
+#include "tests/X86/STRINGOP/STOS.S"
 
-#if APPLE_SAFE_TESTS
-# include "tests/X86/STRINGOP/CMPS.S"
-# include "tests/X86/STRINGOP/LODS.S"
-# include "tests/X86/STRINGOP/MOVS.S"
-# include "tests/X86/STRINGOP/SCAS.S"
-# include "tests/X86/STRINGOP/STOS.S"
-#endif  // __APPLE__
+#include "tests/X86/X87/FADD.S"
+#include "tests/X86/X87/FCOM.S"
+#include "tests/X86/X87/FDIV.S"
+#include "tests/X86/X87/FLD.S"
+#include "tests/X86/X87/FMUL.S"
+#include "tests/X86/X87/FSUB.S"
+#include "tests/X86/X87/FST.S"
+#include "tests/X86/X87/FUCOM.S"
+#include "tests/X86/X87/FXCH.S"
+#include "tests/X86/X87/MISC.S"
 
-
-# include "tests/X86/X87/FLD.S"
 
     /* Create a symbol that represents the end of the test information table. */
     .section "__x86_test_table", "a"

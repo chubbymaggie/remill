@@ -4,9 +4,10 @@
 DIR=$(dirname $(dirname $( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )))
 UBUNTU_RELEASE=`lsb_release -sc`
 
+#sudo apt-get update -yqq
+#sudo apt-get upgrade -yqq
+
 # Make sure we have `add-apt-repository`.
-sudo apt-get update -qq
-sudo apt-get upgrade -yqq
 sudo apt-get install -y software-properties-common
 sudo apt-get install -y build-essential
 
@@ -35,32 +36,14 @@ sudo apt-get install -y clang-3.9
 sudo apt-get install -y g++-multilib
 sudo apt-get install -y unzip
 sudo apt-get install -y cmake
+sudo apt-get install -y realpath
 
-# Upgrade PIP and install the python bindings for protocol buffers.
+# Upgrade PIP and install the python bindings for protocol buffers. Ubuntu's
+# protobuf-compiler package uses libproto 2.6.1, but facepalmingly, its
+# python-protobuf package is based on 2.4.1.
 sudo pip install --upgrade pip
 sudo pip install python-magic
-sudo pip install 'protobuf==2.4.1'
+sudo pip install 'protobuf==2.6.1'
 
-# Unpack and install Intel XED.
-$DIR/scripts/unix/install_xed.sh
-
-# Compile and install Google Test.
-$DIR/scripts/unix/install_gtest.sh
-
-# Compile .proto files into C++ and python files.
-$DIR/scripts/unix/compile_protobufs.sh
-
-# Build and install Remill.
-mkdir remill_build
-pushd remill_build
-cmake \
--DCMAKE_C_COMPILER=clang-3.9 \
--DCMAKE_CXX_COMPILER=clang++-3.9 \
--DCMAKE_LLVM_LINK=llvm-link-3.9 \
-..
-
-make semantics VERBOSE=1
-make all VERBOSE=1
-sudo make install
-popd
-
+# Build remill
+$DIR/build.sh

@@ -3,6 +3,14 @@
 #ifndef REMILL_ARCH_RUNTIME_DEFINITIONS_H_
 #define REMILL_ARCH_RUNTIME_DEFINITIONS_H_
 
+#ifndef ADDRESS_SIZE_BITS
+# define ADDRESS_SIZE_BITS 64UL
+#endif
+
+#ifndef ADDRESS_SIZE_BYTES
+# define ADDRESS_SIZE_BYTES static_cast<addr_t>(ADDRESS_SIZE_BITS / 8)
+#endif
+
 #if 64 == ADDRESS_SIZE_BITS
 # define IF_32BIT(...)
 # define IF_64BIT(...) __VA_ARGS__
@@ -31,17 +39,12 @@
 // Define a semantics implementing function.
 #define DEF_SEM(name, ...) \
     ALWAYS_INLINE static void name ( \
-        State &state, Memory *&memory, ##__VA_ARGS__) noexcept
+        Memory *&memory, State &state, ##__VA_ARGS__) noexcept
 
 // Define a semantics implementing function.
 #define DEF_HELPER(name, ...) \
   ALWAYS_INLINE static auto name ( \
-      State &state, Memory *&memory, ##__VA_ARGS__) noexcept
-
-// Define a semantics implementing function that is also an instruction.
-#define DEF_ISEL_SEM(name, ...) \
-    extern "C" ALWAYS_INLINE void name ( \
-        State &state, Memory *&memory, ##__VA_ARGS__) noexcept
+      Memory *&memory, State &state, ##__VA_ARGS__) noexcept
 
 // An instruction where the implementation is the same for all operand sizes.
 #define DEF_ISEL_ALL(name, func) \
@@ -59,8 +62,8 @@
 // An instruction with no explicit destination operand that reads either a
 // 32- or a 64-bit register or immediate value.
 #define DEF_ISEL_RI32or64(name, func) \
-    IF_32BIT( DEF_ISEL(name ## _32) = func<uint32_t> ) \
-    IF_64BIT( DEF_ISEL(name ## _64) = func<uint64_t> )
+    IF_32BIT( DEF_ISEL(name ## _32) = func<I32> ) \
+    IF_64BIT( DEF_ISEL(name ## _64) = func<I64> )
 
 // An instruction with a single 32- or 64-bit register destination operand.
 #define DEF_ISEL_R32or64W(name, func) \

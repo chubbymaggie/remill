@@ -1,246 +1,273 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
 
-#define DEBUG_TYPE "remill_optimize"
+#include <gflags/gflags.h>
+#include <glog/logging.h>
 
+#include <algorithm>
+#include <bitset>
 #include <iostream>
+#include <queue>
 #include <set>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
-#include <llvm/Pass.h>
+#include <llvm/Analysis/TargetLibraryInfo.h>
+
 #include <llvm/IR/Constants.h>
-#include <llvm/IR/Module.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
+#include <llvm/IR/LegacyPassManager.h>
+#include <llvm/IR/PassManager.h>
+#include <llvm/IR/Module.h>
 
+#include <llvm/Pass.h>
+
+#include <llvm/Transforms/IPO.h>
+#include <llvm/Transforms/IPO/PassManagerBuilder.h>
+#include <llvm/Transforms/Scalar.h>
 #include <llvm/Transforms/Utils/Local.h>
 
-namespace remill {
+#include "remill/BC/ABI.h"
+#include "remill/BC/Optimizer.h"
+#include "remill/BC/Util.h"
+#include "remill/OS/FileSystem.h"
+
+DEFINE_string(bc_in, "", "Input bitcode file to be optimized.");
+
+DEFINE_string(bc_out, "", "Optimized bitcode.");
+
+DEFINE_bool(server, false, "Run the optimizer as a server. This will allow "
+                           "remill-opt to receive bitcode from remill-lift.");
+
+DEFINE_bool(strip, false, "Strip out all debug information.");
+
+DEFINE_bool(lower_mem, false, "Lower memory access intrinsics into "
+                              "LLVM load and store instructions. "
+                              "Note: the memory class pointer is replaced "
+                              "with a i8 pointer.");
+
+DEFINE_bool(lower_fp_mem, false, "Lower floating-point memory access "
+                                 "intrinsics into LLVM load and store "
+                                 "instructions.");
+
 namespace {
 
-// Require that if `function` is invoked, then it is treated as a tail call.
-static void ForceTailCall(llvm::Function *function) {
-  for (auto callers : function->users()) {
-    auto call_instr = llvm::dyn_cast<llvm::CallInst>(callers);
-    if (!call_instr) continue;
-    if (call_instr->isInlineAsm()) continue;
-    if (llvm::isa<llvm::IntrinsicInst>(call_instr)) continue;
-
-    // Make sure the caller "looks" like a lifted basic block.
-    auto caller = call_instr->getParent()->getParent();
-    if (!caller->getName().startswith("__lifted")) continue;
-
-    auto call_instr_iter = call_instr->getIterator();
-    auto next_instr_iter = ++call_instr_iter;
-    llvm::Instruction *next_instr = &*next_instr_iter;
-
-    if (llvm::isa<llvm::BranchInst>(next_instr) ||
-        llvm::isa<llvm::UnreachableInst>(next_instr)) {
-      next_instr->eraseFromParent();
-      llvm::ReturnInst::Create(function->getContext(), call_instr->getParent());
-
-    } else if (!llvm::isa<llvm::ReturnInst>(next_instr)) {
-      llvm::errs()
-          << "Call to " << function->getName() << " cannot safely be "
-          << "converted into a tail call because it is not followed by "
-          << "either a branch or a return.";
-
-      continue;  // Not good :-/
+static void RemoveISelVars(llvm::Module *module) {
+  std::vector<llvm::GlobalVariable *> isels;
+  for (auto &var : module->globals()) {
+    if (!var.getName().startswith("__remill")) {
+      DLOG(INFO)
+          << "Removing ISEL definition " << var.getName().str();
+      isels.push_back(&var);
     }
-
-    call_instr->setAttributes(function->getAttributes());
-    call_instr->setTailCallKind(llvm::CallInst::TCK_MustTail);
-    call_instr->setCallingConv(llvm::CallingConv::Fast);
+  }
+  for (auto isel : isels) {
+    isel->eraseFromParent();
   }
 }
 
-// Looks for a function by name. If we can't find it, try to find an underscore
-// prefixed version, just in case this is Mac or Windows.
-static llvm::Function *GetFunction(llvm::Module &module, const char *name) {
-  if (auto function = module.getFunction(name)) {
-    return function;
-  } else {
-    std::stringstream ss;
-    ss << "_" << name;  // Underscorilize (Mac OS X, Windows).
-    return module.getFunction(ss.str());
+static void StripDebugInfo(llvm::Module *module) {
+  if (FLAGS_strip) {
+    llvm::legacy::PassManager module_manager;
+    module_manager.add(llvm::createStripDebugDeclarePass());
+    module_manager.add(llvm::createStripSymbolsPass(true /* OnlyDebugInfo */));
+    module_manager.add(llvm::createStripDeadDebugInfoPass());
+    module_manager.run(*module);
   }
 }
 
-// Replace all uses of a specific intrinsic with an undefined value.
-static void ReplaceIntrinsic(llvm::Function *function) {
-  std::vector<llvm::CallInst *> call_instrs;
-  for (auto callers : function->users()) {
-    if (auto call_instr = llvm::dyn_cast<llvm::CallInst>(callers)) {
-      call_instrs.push_back(call_instr);
+static void RemoveFunction(llvm::Module *module, llvm::StringRef name) {
+  if (auto func = module->getFunction(name)) {
+    if (!func->hasNUsesOrMore(1)) {
+      func->removeFromParent();
+      delete func;
     }
-  }
-  auto undef_val = llvm::UndefValue::get(function->getReturnType());
-  for (auto call_instr : call_instrs) {
-    call_instr->replaceAllUsesWith(undef_val);
-    call_instr->removeFromParent();
-    delete call_instr;
   }
 }
 
-// Replace all uses of a specific intrinsic with an undefined value.
-static void ReplaceIntrinsic(llvm::Module &module, const char *name) {
-  auto function = GetFunction(module, name);
-  if (!function) return;
-
-  return ReplaceIntrinsic(function);
+static void RemoveDeadIntrinsics(llvm::Module *module) {
+  RemoveFunction(module, "__remill_intrinsics");
+  RemoveFunction(module, "__remill_mark_as_used");
+  RemoveFunction(module, "__remill_defer_inlining");
+  RemoveFunction(module, "__remill_undefined_8");
+  RemoveFunction(module, "__remill_undefined_16");
+  RemoveFunction(module, "__remill_undefined_32");
+  RemoveFunction(module, "__remill_undefined_64");
+  RemoveFunction(module, "__remill_undefined_f32");
+  RemoveFunction(module, "__remill_undefined_f64");
 }
 
-// Remove calls to the undefined intrinsics. The goal here is to improve dead
-// store elimination by peppering the instruction semantics with assignments
-// to the return values of special `__remill_undefined_*` intrinsics. It's hard
-// to reliably produce an `undef` LLVM value from C/C++, so we use our trick
-// of declaring (but never defining) a special "intrinsic" and then we replace
-// all such uses with `undef` values.
-void RemoveUndefinedIntrinsics(llvm::Module &module) {
-  ReplaceIntrinsic(module, "__remill_undefined_bool");
-  ReplaceIntrinsic(module, "__remill_undefined_8");
-  ReplaceIntrinsic(module, "__remill_undefined_16");
-  ReplaceIntrinsic(module, "__remill_undefined_32");
-  ReplaceIntrinsic(module, "__remill_undefined_64");
-
-  ReplaceIntrinsic(module, "__remill_undefined_f32");
-  ReplaceIntrinsic(module, "__remill_undefined_f64");
-
-  // Eliminate stores of undefined values.
-  for (auto &function : module) {
-    std::vector<llvm::Instruction *> dead_instrs;
-    for (auto &basic_block : function) {
-      for (auto &instr : basic_block) {
-        if (auto store_instr = llvm::dyn_cast<llvm::StoreInst>(&instr)) {
-          if (llvm::isa<llvm::UndefValue>(store_instr->getValueOperand())) {
-            dead_instrs.push_back(store_instr);
-          }
-        }
-      }
-    }
-
-    // Done after we've collected the stores so that we don't affect
-    // the iterators.
-    for (auto dead_instr : dead_instrs) {
-      llvm::RecursivelyDeleteTriviallyDeadInstructions(dead_instr);
+static void RemoveUnusedSemantics(llvm::Module *module) {
+  std::vector<llvm::Function *> to_remove;
+  for (auto &func : *module) {
+    if (!func.getName().startswith("__remill")) {
+      to_remove.push_back(&func);
     }
   }
+  for (auto func : to_remove) {
+    if (!func->hasNUsesOrMore(1)) {
+      func->eraseFromParent();
+    }
+  }
+}
 
-  // Remove globals that we don't need.
-  std::vector<llvm::GlobalVariable *> remove_globals;
-  for (auto &global : module.globals()) {
-    if (auto global_var = llvm::dyn_cast<llvm::GlobalVariable>(&global)) {
-      if (!global_var->hasNUsesOrMore(1)) {
-        remove_globals.push_back(global_var);
-      } else {
-        global_var->setVisibility(llvm::GlobalValue::HiddenVisibility);
-        global_var->setLinkage(llvm::GlobalValue::PrivateLinkage);
+// Lower a memory read intrinsic into a `load` instruction.
+static void ReplaceMemReadOp(llvm::Module *module, const char *name,
+                               llvm::Type *val_type) {
+  auto func = module->getFunction(name);
+  CHECK(func->isDeclaration())
+      << "Cannot lower already implemented memory intrinsic " << name;
+
+  std::vector<llvm::CallInst *> callers;
+  for (auto user : func->users()) {
+    if (auto call_inst = llvm::dyn_cast<llvm::CallInst>(user)) {
+      if (call_inst->getCalledFunction() == func) {
+        callers.push_back(call_inst);
       }
     }
   }
 
-  for (auto global_var : remove_globals) {
-    global_var->removeFromParent();
-    delete global_var;
+  for (auto call_inst : callers) {
+    auto mem_ptr = call_inst->getArgOperand(0);
+    auto addr = call_inst->getArgOperand(1);
+    llvm::Value *indexes[] = {addr};
+    llvm::IRBuilder<> ir(call_inst);
+    auto gep = ir.CreateInBoundsGEP(mem_ptr, indexes);
+    auto ptr = ir.CreatePointerCast(gep, llvm::PointerType::get(val_type, 0));
+    llvm::Value *val = ir.CreateLoad(ptr);
+    if (val_type->isX86_FP80Ty()) {
+      val = ir.CreateFPTrunc(val, func->getReturnType());
+    }
+    call_inst->replaceAllUsesWith(val);
   }
 }
 
-// Enable inlining of functions whose inlining has been deferred.
-static void EnableInlining(llvm::Module &module) {
-  auto defer_inlining_func = GetFunction(module, "__remill_defer_inlining");
-  if (!defer_inlining_func) return;
+// Lower a memory write intrinsic into a `store` instruction.
+static void ReplaceMemWriteOp(llvm::Module *module, const char *name,
+                               llvm::Type *val_type) {
+  auto func = module->getFunction(name);
+  CHECK(func->isDeclaration())
+      << "Cannot lower already implemented memory intrinsic " << name;
 
-  std::vector<llvm::CallInst *> call_instrs;
-  std::set<llvm::Function *> processed_funcs;
-
-  // Find all calls to the inline defer intrinsic.
-  for (auto caller : defer_inlining_func->users()) {
-    if (auto call_instr = llvm::dyn_cast_or_null<llvm::CallInst>(caller)) {
-      call_instrs.push_back(call_instr);
-    }
-  }
-
-  // Remove the calls to the inline defer intrinsic, and mark the functions
-  // containing those calls as inlinable.
-  for (auto call_instr : call_instrs) {
-    auto basic_block = call_instr->getParent();
-    auto caller_func = basic_block->getParent();
-
-    processed_funcs.insert(caller_func);
-
-    caller_func->removeFnAttr(llvm::Attribute::NoInline);
-    caller_func->addFnAttr(llvm::Attribute::AlwaysInline);
-    caller_func->addFnAttr(llvm::Attribute::InlineHint);
-
-    call_instr->replaceAllUsesWith(llvm::UndefValue::get(call_instr->getType()));
-    call_instr->eraseFromParent();
-  }
-
-  // Emulate the `flatten` attribute by finding all calls to functions that
-  // containing the inline defer intrinsic, and mark the call instructions
-  // as requiring inlining.
-  for (auto function : processed_funcs) {
-    for (auto callers : function->users()) {
-      if (auto call_instr = llvm::dyn_cast_or_null<llvm::CallInst>(callers)) {
-        call_instr->addAttribute(llvm::AttributeSet::FunctionIndex,
-                                 llvm::Attribute::AlwaysInline);
+  std::vector<llvm::CallInst *> callers;
+  for (auto user : func->users()) {
+    if (auto call_inst = llvm::dyn_cast<llvm::CallInst>(user)) {
+      if (call_inst->getCalledFunction() == func) {
+        callers.push_back(call_inst);
       }
     }
+  }
+
+  for (auto call_inst : callers) {
+    auto mem_ptr = call_inst->getArgOperand(0);
+    auto addr = call_inst->getArgOperand(1);
+    auto val = call_inst->getArgOperand(2);
+
+    llvm::Value *indexes[] = {addr};
+    llvm::IRBuilder<> ir(call_inst);
+    auto gep = ir.CreateInBoundsGEP(mem_ptr, indexes);
+    auto ptr = ir.CreatePointerCast(gep, llvm::PointerType::get(val_type, 0));
+    if (val_type->isX86_FP80Ty()) {
+      val = ir.CreateFPExt(val, func->getReturnType());
+    }
+    ir.CreateStore(val, ptr);
+    call_inst->replaceAllUsesWith(mem_ptr);
+  }
+}
+
+static void LowerMemOps(llvm::Module *module) {
+  auto &context = module->getContext();
+  auto mem_func = module->getFunction("__remill_write_memory_8");
+  auto mem_ptr_type = llvm::dyn_cast<llvm::PointerType>(
+      mem_func->getReturnType());
+  auto mem_type = llvm::dyn_cast<llvm::StructType>(
+      mem_ptr_type->getElementType());
+  mem_type->setBody(llvm::Type::getInt8Ty(context), nullptr, nullptr);
+
+  ReplaceMemReadOp(module, "__remill_read_memory_8",
+                   llvm::Type::getInt8Ty(context));
+  ReplaceMemReadOp(module, "__remill_read_memory_16",
+                   llvm::Type::getInt16Ty(context));
+  ReplaceMemReadOp(module, "__remill_read_memory_32",
+                   llvm::Type::getInt32Ty(context));
+  ReplaceMemReadOp(module, "__remill_read_memory_64",
+                   llvm::Type::getInt64Ty(context));
+  ReplaceMemReadOp(module, "__remill_read_memory_f32",
+                   llvm::Type::getFloatTy(context));
+  ReplaceMemReadOp(module, "__remill_read_memory_f64",
+                   llvm::Type::getDoubleTy(context));
+
+  ReplaceMemWriteOp(module, "__remill_write_memory_8",
+                    llvm::Type::getInt8Ty(context));
+  ReplaceMemWriteOp(module, "__remill_write_memory_16",
+                    llvm::Type::getInt16Ty(context));
+  ReplaceMemWriteOp(module, "__remill_write_memory_32",
+                    llvm::Type::getInt32Ty(context));
+  ReplaceMemWriteOp(module, "__remill_write_memory_64",
+                    llvm::Type::getInt64Ty(context));
+  ReplaceMemWriteOp(module, "__remill_write_memory_f32",
+                    llvm::Type::getFloatTy(context));
+  ReplaceMemWriteOp(module, "__remill_write_memory_f64",
+                    llvm::Type::getDoubleTy(context));
+
+  if (FLAGS_lower_fp_mem) {
+    ReplaceMemReadOp(module, "__remill_read_memory_f80",
+                     llvm::Type::getX86_FP80Ty(context));
+    ReplaceMemWriteOp(module, "__remill_write_memory_f80",
+                      llvm::Type::getX86_FP80Ty(context));
   }
 }
 
 }  // namespace
 
-// Implements the deferred inlining optimization. Remill uses a special
-// `__remill_defer_inlining` intrinsic to mark functions as needing to be
-// "late" inlined. The idea is that we want some functions to be optimized
-// away (flag computation functions), but the ones that stick around should
-// then be inlined into their callers for further optimization.
-class IntrinsicOptimizer : public llvm::ModulePass {
- public:
-  IntrinsicOptimizer(void);
-  ~IntrinsicOptimizer(void);
+int main(int argc, char *argv[]) {
+  std::stringstream ss;
+  ss << std::endl << std::endl
+     << "  " << argv[0] << " \\" << std::endl
+     << "    --bc_in INPUT_BC_FILE \\" << std::endl
+     << "    --bc_out OUTPUT_BC_FILE \\" << std::endl
+     << "    [--server]" << std::endl
+     << std::endl;
 
-  virtual const char *getPassName(void) const override;
-  virtual bool runOnModule(llvm::Module &) override;
+  google::InitGoogleLogging(argv[0]);
+  google::SetUsageMessage(ss.str());
+  google::ParseCommandLineFlags(&argc, &argv, true);
 
-  static char ID;
+  CHECK(!FLAGS_bc_in.empty())
+      << "Please specify an input bitcode file with --bc_in.";
 
- private:
-};
+  CHECK(remill::FileExists(FLAGS_bc_in))
+      << "Input bitcode file " << FLAGS_bc_in << " does not exist.";
 
-IntrinsicOptimizer::IntrinsicOptimizer(void)
-    : llvm::ModulePass(ID) {}
+  CHECK(!FLAGS_bc_out.empty())
+      << "Please specify an output bitcode file with --bc_out.";
 
-IntrinsicOptimizer::~IntrinsicOptimizer(void) {}
+  do {
+    auto context = new llvm::LLVMContext;
+    auto module = remill::LoadModuleFromFile(context, FLAGS_bc_in);
+    auto optimizer = remill::Optimizer::Create(module);
+    auto module_id = module->getModuleIdentifier();
+    StripDebugInfo(module);
+    RemoveISelVars(module);
 
-const char *IntrinsicOptimizer::getPassName(void) const {
-  return DEBUG_TYPE;
+    if (FLAGS_lower_mem) {
+      LowerMemOps(module);
+    }
+
+    optimizer->Optimize();
+
+    RemoveDeadIntrinsics(module);
+    if (false) {
+      RemoveUnusedSemantics(module);
+      StripDebugInfo(module);
+    }
+    remill::StoreModuleToFile(module, FLAGS_bc_out);
+    delete module;
+    delete context;
+  } while (FLAGS_server);
+
+  google::ShutDownCommandLineFlags();
+  google::ShutdownGoogleLogging();
+  return EXIT_SUCCESS;
 }
-
-bool IntrinsicOptimizer::runOnModule(llvm::Module &module) {
-  RemoveUndefinedIntrinsics(module);
-  ForceTailCall(GetFunction(module, "__remill_error"));
-  ForceTailCall(GetFunction(module, "__remill_jump"));
-  ForceTailCall(GetFunction(module, "__remill_function_call"));
-  ForceTailCall(GetFunction(module, "__remill_function_return"));
-  ForceTailCall(GetFunction(module, "__remill_system_call"));
-  ForceTailCall(GetFunction(module, "__remill_system_return"));
-  ForceTailCall(GetFunction(module, "__remill_interrupt_call"));
-  ForceTailCall(GetFunction(module, "__remill_interrupt_return"));
-  ForceTailCall(GetFunction(module, "__remill_missing_block"));
-  EnableInlining(module);
-
-  return true;
-}
-
-char IntrinsicOptimizer::ID = 0;
-
-static llvm::RegisterPass<IntrinsicOptimizer> X(
-    DEBUG_TYPE,
-    "Removes `__remill_defer_inlining` and `__remill_undefined_*` intrinsics.",
-    false,  // Only looks at CFG.
-    false);  // Analysis Pass.
-
-
-}  // namespace remill
