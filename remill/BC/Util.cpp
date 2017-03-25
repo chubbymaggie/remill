@@ -12,17 +12,23 @@
 #include <unistd.h>
 
 #include <llvm/ADT/SmallVector.h>
+
 #include <llvm/Bitcode/ReaderWriter.h>
+
 #include <llvm/IR/BasicBlock.h>
+#include <llvm/IR/DebugInfoMetadata.h>
 #include <llvm/IR/DebugLoc.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
 #include <llvm/IR/IntrinsicInst.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Metadata.h>
 #include <llvm/IR/Module.h>
 #include <llvm/IR/Verifier.h>
+
 #include <llvm/IRReader/IRReader.h>
+
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/raw_ostream.h>
 #include <llvm/Support/SourceMgr.h>
@@ -53,8 +59,6 @@ void InitFunctionAttributes(llvm::Function *function) {
   //            intrinsics.
   function->setCallingConv(llvm::CallingConv::Fast);
 
-  // Mark everything for inlining.
-  function->addFnAttr(llvm::Attribute::AlwaysInline);
   function->addFnAttr(llvm::Attribute::InlineHint);
 }
 
@@ -74,7 +78,7 @@ void AddTerminatingTailCall(llvm::Function *source_func,
     // Make sure we tail-call from one block method to another.
     call_target_instr->setTailCallKind(llvm::CallInst::TCK_MustTail);
     call_target_instr->setCallingConv(llvm::CallingConv::Fast);
-    ir.CreateRetVoid();
+    ir.CreateRet(call_target_instr);
   } else {
     AddTerminatingTailCall(&(source_func->back()), dest_func);
   }
@@ -112,7 +116,7 @@ void AddTerminatingTailCall(llvm::BasicBlock *source_block,
   // Make sure we tail-call from one block method to another.
   call_target_instr->setTailCallKind(llvm::CallInst::TCK_MustTail);
   call_target_instr->setCallingConv(llvm::CallingConv::Fast);
-  ir.CreateRetVoid();
+  ir.CreateRet(call_target_instr);
 }
 
 // Find a local variable defined in the entry block of the function. We use
@@ -258,25 +262,10 @@ namespace {
 # define INSTALL_SEMANTICS_DIR
 #endif  // INSTALL_SEMANTICS_DIR
 
-static const char *gSearchPaths[] = {
+static const char *gSemanticsSearchPaths[] = {
     // Derived from the build.
     BUILD_SEMANTICS_DIR "\0",
     INSTALL_SEMANTICS_DIR "\0",
-
-    // Linux.
-    "/usr/local/share/remill/semantics",
-    "/usr/share/remill/semantics",
-
-    // Other?
-    "/opt/local/share/remill/semantics",
-    "/opt/share/remill/semantics",
-    "/opt/remill/semantics",
-
-    // FreeBSD.
-    "/usr/share/compat/linux/remill/semantics",
-    "/usr/local/share/compat/linux/remill/semantics",
-    "/compat/linux/usr/share/remill/semantics",
-    "/compat/linux/usr/local/share/remill/semantics",
 };
 
 }  // namespace
@@ -288,9 +277,9 @@ std::string FindSemanticsBitcodeFile(const std::string &path,
     return path;
   }
 
-  for (auto path : gSearchPaths) {
+  for (auto sem_dir : gSemanticsSearchPaths) {
     std::stringstream ss;
-    ss << path << "/" << arch << ".bc";
+    ss << sem_dir << "/" << arch << ".bc";
     auto sem_path = ss.str();
     if (FileExists(sem_path)) {
       return sem_path;
@@ -309,126 +298,26 @@ llvm::Argument *NthArgument(llvm::Function *func, size_t index) {
   return &*it;
 }
 
-void ForEachIndirectBlock(
-    llvm::Module *module,
-    IndirectBlockCallback on_each_function) {
-  auto table_var = module->getGlobalVariable("__remill_indirect_blocks");
-  auto init = table_var->getInitializer();
-  auto module_id = module->getModuleIdentifier();
-
-  if (llvm::isa<llvm::ConstantAggregateZero>(init)) {
-    return;
-  }
-
-  // Read in the addressable blocks from the indirect blocks table. Below,
-  // the translator marks every decoded basic block in the CFG as being
-  // addressable, so we expect all of them to be in the table.
-  auto entries = llvm::dyn_cast<llvm::ConstantArray>(init);
-  if (!entries) {
-    LOG(FATAL)
-        << "No entries in __remill_indirect_blocks (0x" << std::hex
-        << reinterpret_cast<uintptr_t>(init) << "): "
-        << LLVMThingToString(table_var);
-  }
-
-  std::vector<llvm::ConstantStruct *> recorded_entries;
-  recorded_entries.reserve(entries->getNumOperands());
-
-  for (const auto &entry : entries->operands()) {
-    if (llvm::isa<llvm::ConstantAggregateZero>(entry)) {
-      continue;  // Sentinel.
-    }
-    auto indirect_block = llvm::dyn_cast<llvm::ConstantStruct>(entry.get());
-    recorded_entries.push_back(indirect_block);
-  }
-
-  for (auto indirect_block : recorded_entries) {
-    // Note: Each entry has the following type:
-    //    struct IndirectBlock final {
-    //      const uint64_t lifted_address;
-    //      void (* const lifted_func)(State &, Memory &, addr_t);
-    //    };
-    auto block_pc = llvm::dyn_cast<llvm::ConstantInt>(
-        indirect_block->getOperand(0))->getZExtValue();
-    auto lifted_func = llvm::dyn_cast<llvm::Function>(
-        indirect_block->getOperand(1));
-    on_each_function(block_pc, lifted_func);
-  }
-}
-
-namespace {
-
-// Pull the `name` out of a `NamedBlock`.
-static std::string GetSubroutineName(llvm::ConstantStruct *exported_block) {
-  auto name_gep = exported_block->getOperand(0);
-  auto name_var = llvm::dyn_cast<llvm::GlobalVariable>(
-      name_gep->getOperand(0));
-  auto name_arr = llvm::dyn_cast<llvm::ConstantDataArray>(
-      name_var->getOperand(0));
-  return name_arr->getAsCString();
-}
-
-// Run a callback function for every named block entry in a remill-lifted
+// Run a callback function for every indirect block entry in a remill-lifted
 // bitcode module.
-static void ForEachNamedBlock(llvm::Module *module, const char *table_name,
-                              NamedBlockCallback on_each_function) {
-  auto table_var = module->getGlobalVariable(table_name);
-  auto init = table_var->getInitializer();
-
-  if (llvm::isa<llvm::ConstantAggregateZero>(init)) {
-    return;
-  }
-
-  auto entries = llvm::dyn_cast<llvm::ConstantArray>(init);
-  if (!entries) {
-    LOG(FATAL)
-        << "No entries in " << table_name << " (0x" << std::hex
-        << reinterpret_cast<uintptr_t>(init) << "): "
-        << LLVMThingToString(table_var);
-  }
-
-  std::vector<llvm::ConstantStruct *> recorded_entries;
-  recorded_entries.reserve(entries->getNumOperands());
-
-  for (const auto &entry : entries->operands()) {
-    if (llvm::isa<llvm::ConstantAggregateZero>(entry)) {
+void ForEachBlock(llvm::Module *module, BlockCallback on_each_function) {
+  for (auto &global_var : module->globals()) {
+    uint64_t pc = 0;
+    uint64_t id = 0;
+    if (!TryGetBlockPC(&global_var, pc)) {
       continue;
     }
-    auto exported_block = llvm::dyn_cast<llvm::ConstantStruct>(entry.get());
-    recorded_entries.push_back(exported_block);
+    if (!TryGetBlockId(&global_var, id)) {
+      id = pc;
+    }
+
+    auto func = llvm::dyn_cast<llvm::Function>(global_var.getInitializer());
+    CHECK(func != nullptr)
+        << "Global variable " << global_var.getName().str()
+        << " should be initialized with a function.";
+
+    on_each_function(pc, id, func);
   }
-
-  for (auto exported_block : recorded_entries) {
-    // Note: Each `entry` has the following type:
-    //    struct NamedBlock final {
-    //      const char * const name;
-    //      void (* const lifted_func)(Memory &, State &, addr_t);
-    //      void (* const native_func)(void);
-    //    };
-    auto func_name = GetSubroutineName(exported_block);
-    auto lifted_func = llvm::dyn_cast<llvm::Function>(
-        exported_block->getOperand(1));
-    auto native_func = llvm::dyn_cast<llvm::Function>(
-        exported_block->getOperand(2));
-
-    on_each_function(func_name, lifted_func, native_func);
-  }
-}
-
-}  // namespace
-
-// Run a callback function for every exported block entry in a remill-lifted
-// bitcode module.
-void ForEachExportedBlock(
-    llvm::Module *module, NamedBlockCallback on_each_function) {
-  ForEachNamedBlock(module, "__remill_exported_blocks", on_each_function);
-}
-
-// Run a callback function for every imported block entry in a remill-lifted
-// bitcode module.
-void ForEachImportedBlock(
-    llvm::Module *module, NamedBlockCallback on_each_function) {
-  ForEachNamedBlock(module, "__remill_imported_blocks", on_each_function);
 }
 
 // Clone function `source_func` into `dest_func`. This will strip out debug
@@ -572,6 +461,158 @@ void CloneFunctionInto(llvm::Function *source_func, llvm::Function *dest_func) {
       }
     }
   }
+}
+
+namespace {
+
+static bool TryGetBlockInt(llvm::GlobalObject *func, uint64_t &pc,
+                           const char *name) {
+  auto md = func->getMetadata(name);
+  if (!md) {
+    return false;
+  }
+  auto val = llvm::dyn_cast<llvm::ValueAsMetadata>(md->getOperand(0).get());
+  if (!val) {
+    return false;
+  }
+  auto pc_val = llvm::dyn_cast<llvm::ConstantInt>(val->getValue());
+  if (!pc_val) {
+    return false;
+  }
+  pc = pc_val->getZExtValue();
+  return true;
+}
+
+static void SetBlockMeta(llvm::GlobalObject *func, const char *name, uint64_t val) {
+  auto &context = func->getContext();
+  auto int_type = llvm::Type::getInt64Ty(context);
+  auto const_val = llvm::ConstantInt::get(int_type, val);
+  auto md = llvm::ValueAsMetadata::get(const_val);
+  func->setMetadata(name, llvm::MDNode::get(context, md));
+}
+
+}  // namespace
+
+// Try to get the address of a block.
+bool TryGetBlockPC(llvm::GlobalObject *func, uint64_t &pc) {
+  return TryGetBlockInt(func, pc, "pc");
+}
+
+// Try to get the ID of this block. This may be the same as the block's PC.
+bool TryGetBlockId(llvm::GlobalObject *func, uint64_t &id) {
+  return TryGetBlockInt(func, id, "id");
+}
+
+// Try to get the ID of this block. This may be the same as the block's PC.
+bool TryGetBlockName(llvm::Function *func, std::string &name) {
+  auto md = func->getMetadata("name");
+  if (!md) {
+    return false;
+  }
+  auto val = llvm::dyn_cast<llvm::ValueAsMetadata>(md->getOperand(0).get());
+  if (!val) {
+    return false;
+  }
+  auto name_val = llvm::dyn_cast<llvm::ConstantDataArray>(val->getValue());
+  if (!name_val) {
+    return false;
+  }
+  name = name_val->getAsString().str();
+  return true;
+}
+
+// Set the PC of a block.
+void SetBlockPC(llvm::GlobalObject *func, uint64_t pc) {
+  SetBlockMeta(func, "pc", pc);
+}
+
+// Set the ID of a block.
+void SetBlockId(llvm::GlobalObject *func, uint64_t id) {
+  SetBlockMeta(func, "id", id);
+}
+
+void SetBlockName(llvm::Function *func, const std::string &name) {
+  auto &context = func->getContext();
+  auto const_val = llvm::ConstantDataArray::getString(
+      context, name, false  /* AddNull */);
+  auto addr_md = llvm::ValueAsMetadata::get(const_val);
+  func->setMetadata("name", llvm::MDNode::get(context, addr_md));
+}
+
+namespace {
+
+// Initialize some attributes that are common to all newly created block
+// functions. Also, give pretty names to the arguments of block functions.
+static void InitBlockFunctionAttributes(llvm::Function *block_func) {
+
+  block_func->setLinkage(llvm::GlobalValue::ExternalLinkage);
+  block_func->setVisibility(llvm::GlobalValue::DefaultVisibility);
+
+  remill::NthArgument(block_func, kMemoryPointerArgNum)->setName("memory");
+  remill::NthArgument(block_func, kStatePointerArgNum)->setName("state");
+  remill::NthArgument(block_func, kPCArgNum)->setName("pc");
+}
+
+// These variables must always be defined within `__remill_basic_block`.
+static bool BlockHasSpecialVars(llvm::Function *basic_block) {
+  return FindVarInFunction(basic_block, "STATE", true) &&
+         FindVarInFunction(basic_block, "MEMORY", true) &&
+         FindVarInFunction(basic_block, "PC", true) &&
+         FindVarInFunction(basic_block, "BRANCH_TAKEN", true);
+}
+
+// Clang isn't guaranteed to play nice and name the LLVM values within the
+// `__remill_basic_block` intrinsic with the same names as we find in the
+// C++ definition of that function. However, we compile that function with
+// debug information, and so we will try to recover the variables names for
+// later lookup.
+static void FixupBasicBlockVariables(llvm::Function *basic_block) {
+  if (BlockHasSpecialVars(basic_block)) {
+    return;
+  }
+
+  for (auto &block : *basic_block) {
+    for (auto &inst : block) {
+      if (auto decl_inst = llvm::dyn_cast<llvm::DbgDeclareInst>(&inst)) {
+        auto addr = decl_inst->getAddress();
+        addr->setName(decl_inst->getVariable()->getName());
+      }
+    }
+  }
+
+  CHECK(BlockHasSpecialVars(basic_block))
+      << "Unable to locate required variables in `__remill_basic_block`.";
+}
+
+}  // namespace
+
+// Make `func` a clone of the `__remill_basic_block` function.
+void CloneBlockFunctionInto(llvm::Function *func) {
+  auto module = func->getParent();
+  auto basic_block = module->getFunction("__remill_basic_block");
+  CHECK(nullptr != basic_block)
+      << "Unable to find __remill_basic_block in module "
+      << module->getName().str();
+
+  if (!BlockHasSpecialVars(basic_block)) {
+    InitFunctionAttributes(basic_block);
+    FixupBasicBlockVariables(basic_block);
+    InitBlockFunctionAttributes(basic_block);
+
+    basic_block->addFnAttr(llvm::Attribute::OptimizeNone);
+    basic_block->removeFnAttr(llvm::Attribute::AlwaysInline);
+    basic_block->removeFnAttr(llvm::Attribute::InlineHint);
+    basic_block->addFnAttr(llvm::Attribute::NoInline);
+    basic_block->setVisibility(llvm::GlobalValue::DefaultVisibility);
+  }
+
+  CloneFunctionInto(basic_block, func);
+
+  // Remove the `return` in `__remill_basic_block`.
+  auto &entry = func->front();
+  auto term = entry.getTerminator();
+  term->eraseFromParent();
+  func->removeFnAttr(llvm::Attribute::OptimizeNone);
 }
 
 }  // namespace remill
