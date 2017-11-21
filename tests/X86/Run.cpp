@@ -1,7 +1,22 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #define _XOPEN_SOURCE
 
+#include <cfenv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -27,8 +42,8 @@
 #include "remill/Arch/Runtime/Runtime.h"
 #include "remill/Arch/X86/Runtime/State.h"
 
-DEFINE_string(arch, "", "");
-DEFINE_string(os, "", "");
+DECLARE_string(arch);
+DECLARE_string(os);
 
 namespace {
 
@@ -47,8 +62,6 @@ static Stack gLiftedStack;
 static Stack gNativeStack;
 static Stack gSigStack;
 
-static Flags gRflagsOff;
-static Flags gRflagsOn;
 static Flags gRflagsInitial;
 
 static const addr_t g64BitMask = IF_64BIT_ELSE(~0UL, 0UL);
@@ -86,24 +99,23 @@ static_assert(16 == sizeof(LongDoubleStorage),
 
 extern "C" {
 
-// Used to record the FPU. We will use this to migrate native X87 or MMX
-// state into the `State` structure.
-FPU gFPU = {};
-
 // Native state before we run the native test case. We then use this as the
 // initial state for the lifted testcase. The lifted test case code mutates
-// this, and we require that after running the lifted testcase, `gStateBefore`
-// matches `gStateAfter`,
-std::aligned_storage<sizeof(State), alignof(State)>::type gLiftedState;
+// this, and we require that after running the lifted testcase, `gX86StateBefore`
+// matches `gX86StateAfter`,
+std::aligned_storage<sizeof(X86State), alignof(X86State)>::type gLiftedState;
 
 // Native state after running the native test case.
-std::aligned_storage<sizeof(State), alignof(State)>::type gNativeState;
+std::aligned_storage<sizeof(X86State), alignof(X86State)>::type gNativeState;
+
+// The RFLAGS to run the test with.
+Flags gRflagsForTest = {};
 
 // Address of the native test to run. The `InvokeTestCase` function saves
 // the native program state but then needs a way to figure out where to go
 // without storing that information in any register. So what we do is we
 // store it here and indirectly `JMP` into the native test case code after
-// saving the machine state to `gStateBefore`.
+// saving the machine state to `gX86StateBefore`.
 uintptr_t gTestToRun = 0;
 
 // Used for swapping the stack pointer between `gStack` and the normal
@@ -120,8 +132,8 @@ uint8_t *gStackSwitcher = nullptr;
 uint64_t gStackSaveSlot = 0;
 
 // Invoke a native test case addressed by `gTestToRun` and store the machine
-// state before and after executing the test in `gStateBefore` and
-// `gStateAfter`, respectively.
+// state before and after executing the test in `gX86StateBefore` and
+// `gX86StateAfter`, respectively.
 extern void InvokeTestCase(uint64_t, uint64_t, uint64_t);
 
 #define MAKE_RW_MEMORY(size) \
@@ -170,6 +182,12 @@ NEVER_INLINE Memory *__remill_write_memory_f80(
   return memory;
 }
 
+int __remill_fpu_exception_test_and_clear(int read_mask, int clear_mask) {
+  auto except = std::fetestexcept(read_mask);
+  std::feclearexcept(clear_mask);
+  return except;
+}
+
 Memory *__remill_barrier_load_load(Memory *) { return nullptr; }
 Memory *__remill_barrier_load_store(Memory *) { return nullptr; }
 Memory *__remill_barrier_store_load(Memory *) { return nullptr; }
@@ -179,28 +197,60 @@ Memory *__remill_atomic_end(Memory *) { return nullptr; }
 
 void __remill_defer_inlining(void) {}
 
-Memory *__remill_error(Memory *, State &, addr_t) {
+Memory *__remill_error(X86State &, addr_t, Memory *) {
   siglongjmp(gJmpBuf, 0);
 }
 
-Memory *__remill_missing_block(Memory *memory, State &, addr_t) {
+Memory *__remill_missing_block(X86State &, addr_t, Memory *memory) {
   return memory;
 }
 
 Memory *__remill_sync_hyper_call(
-    Memory *mem, State &state, SyncHyperCall::Name call) {
+    X86State &state, Memory *mem, SyncHyperCall::Name call) {
+  auto eax = state.gpr.rax.dword;
+  auto ebx = state.gpr.rbx.dword;
+  auto ecx = state.gpr.rcx.dword;
+  auto edx = state.gpr.rdx.dword;
+
   switch (call) {
     case SyncHyperCall::kX86CPUID:
+      state.gpr.rax.aword = 0;
+      state.gpr.rbx.aword = 0;
+      state.gpr.rcx.aword = 0;
+      state.gpr.rdx.aword = 0;
+
       asm volatile(
           "cpuid"
           : "=a"(state.gpr.rax.dword),
             "=b"(state.gpr.rbx.dword),
             "=c"(state.gpr.rcx.dword),
             "=d"(state.gpr.rdx.dword)
-          : "a"(state.gpr.rax.dword),
-            "b"(state.gpr.rbx.dword),
-            "c"(state.gpr.rcx.dword),
-            "d"(state.gpr.rdx.dword)
+          : "a"(eax),
+            "b"(ebx),
+            "c"(ecx),
+            "d"(edx)
+      );
+      break;
+
+    case SyncHyperCall::kX86ReadTSC:
+      state.gpr.rax.aword = 0;
+      state.gpr.rdx.aword = 0;
+      asm volatile(
+          "rdtsc"
+          : "=a"(state.gpr.rax.dword),
+            "=d"(state.gpr.rdx.dword)
+      );
+      break;
+
+    case SyncHyperCall::kX86ReadTSCP:
+      state.gpr.rax.aword = 0;
+      state.gpr.rcx.aword = 0;
+      state.gpr.rdx.aword = 0;
+      asm volatile(
+          "rdtscp"
+          : "=a"(state.gpr.rax.dword),
+            "=c"(state.gpr.rcx.dword),
+            "=d"(state.gpr.rdx.dword)
       );
       break;
 
@@ -211,19 +261,19 @@ Memory *__remill_sync_hyper_call(
   return mem;
 }
 
-Memory *__remill_function_call(Memory *, State &, addr_t) {
+Memory *__remill_function_call(X86State &, addr_t, Memory *) {
   __builtin_unreachable();
 }
 
-Memory *__remill_function_return(Memory *, State &, addr_t) {
+Memory *__remill_function_return(X86State &, addr_t, Memory *) {
   __builtin_unreachable();
 }
 
-Memory *__remill_jump(Memory *, State &, addr_t) {
+Memory *__remill_jump(X86State &, addr_t, Memory *) {
   __builtin_unreachable();
 }
 
-Memory *__remill_async_hyper_call(Memory *, State &, addr_t) {
+Memory *__remill_async_hyper_call(X86State &, addr_t, Memory *) {
   __builtin_unreachable();
 }
 
@@ -260,7 +310,7 @@ void __remill_mark_as_used(void *mem) {
 
 }  // extern C
 
-typedef Memory *(LiftedFunc)(Memory *, State &, addr_t);
+typedef Memory *(LiftedFunc)(X86State &, addr_t, Memory *);
 
 // Mapping of test name to translated function.
 static std::map<uint64_t, LiftedFunc *> gTranslatedFuncs;
@@ -270,53 +320,31 @@ static std::vector<const test::TestInfo *> gTests;
 static void InitFlags(void) {
   asm(
       "pushfq;"
-      "pushfq;"
-      "pushfq;"
       "pop %0;"
-      "pop %1;"
-      "pop %2;"
       :
-      : "m"(gRflagsOn),
-        "m"(gRflagsOff),
-        "m"(gRflagsInitial));
-
-  gRflagsOn.cf = true;
-  gRflagsOn.pf = true;
-  gRflagsOn.af = true;
-  gRflagsOn.zf = true;
-  gRflagsOn.sf = true;
-  gRflagsOn.df = true;
-  gRflagsOn.of = true;
-
-  gRflagsOff.cf = false;
-  gRflagsOff.pf = false;
-  gRflagsOff.af = false;
-  gRflagsOff.zf = false;
-  gRflagsOff.sf = false;
-  gRflagsOff.df = false;
-  gRflagsOff.of = false;
+      : "m"(gRflagsInitial));
 }
 
-// Convert some native state, stored in various ways, into the `State` structure
+// Convert some native state, stored in various ways, into the `X86State` structure
 // type.
-static void ImportX87State(State *state) {
-
+static void ImportX87X86State(X86State *state) {
+  auto &fpu = state->x87;
   // Looks like MMX state.
-  if (kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r0 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r1 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r2 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r3 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r4 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r5 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r6 &&
-      kFPUAbridgedTagValid == gFPU.ftw.fxsave.abridged.r7) {
+  if (kFPUAbridgedTagValid == fpu.fxsave.ftw.r0 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r1 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r2 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r3 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r4 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r5 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r6 &&
+      kFPUAbridgedTagValid == fpu.fxsave.ftw.r7) {
 
     // Copy over the MMX data. A good guess for MMX data is that the the
     // value looks like its infinity.
     DLOG(INFO) << "Importing MMX state.";
     for (size_t i = 0; i < 8; ++i) {
-      if (static_cast<uint16_t>(0xFFFFU) == gFPU.st[i].infinity) {
-        state->mmx.elems[i].val.qwords.elems[0] = gFPU.st[i].mmx;
+      if (static_cast<uint16_t>(0xFFFFU) == fpu.fxsave.st[i].infinity) {
+        state->mmx.elems[i].val.qwords.elems[0] = fpu.fxsave.st[i].mmx;
       }
     }
 
@@ -324,17 +352,16 @@ static void ImportX87State(State *state) {
   } else {
     DLOG(INFO) << "Importing FPU state.";
     for (size_t i = 0; i < 8; ++i) {
-      auto st = *reinterpret_cast<long double *>(&(gFPU.st[i].st));
+      auto st = *reinterpret_cast<long double *>(&(fpu.fxsave.st[i].st));
       state->st.elems[i].val = static_cast<float64_t>(st);
     }
   }
 
-  state->sw.c0 = gFPU.swd.c0;
-//  state->sw.c1 = gFPU.swd.c1;
-  state->sw.c2 = gFPU.swd.c2;
-  state->sw.c3 = gFPU.swd.c3;
+  state->sw.c0 = fpu.fxsave.swd.c0;
+//  state->sw.c1 = fpu.fxsave.swd.c1;
+  state->sw.c2 = fpu.fxsave.swd.c2;
+  state->sw.c3 = fpu.fxsave.swd.c3;
 }
-
 
 // Resets the flags to sane defaults. This will disable the trap flag, the
 // alignment check flag, and the CPUID capability flag.
@@ -372,16 +399,13 @@ static void RunWithFlags(const test::TestInfo *info,
   memset(&gLiftedState, 0, sizeof(gLiftedState));
   memset(&gNativeState, 0, sizeof(gNativeState));
 
-  auto lifted_state = reinterpret_cast<State *>(&gLiftedState);
-  auto native_state = reinterpret_cast<State *>(&gNativeState);
-
-  // This will be used to initialize the native flags state before executing
-  // the native test.
-  lifted_state->rflag = flags;
+  auto lifted_state = reinterpret_cast<X86State *>(&gLiftedState);
+  auto native_state = reinterpret_cast<X86State *>(&gNativeState);
 
   // Set up the run's info.
   gTestToRun = info->test_begin;
   gStackSwitcher = &(gLiftedStack._redzone2[0]);
+  gRflagsForTest = flags;
 
   ResetFlags();
 
@@ -397,8 +421,12 @@ static void RunWithFlags(const test::TestInfo *info,
     native_test_faulted = true;
   }
 
-  ImportX87State(native_state);
+  ImportX87X86State(native_state);
   ResetFlags();
+
+  // Set up the RIP correctly.
+  lifted_state->gpr.rip.aword = static_cast<addr_t>(info->test_begin);
+  native_state->gpr.rip.aword = static_cast<addr_t>(info->test_end);
 
   // Copy out whatever was recorded on the stack so that we can compare it
   // with how the lifted program mutates the stack.
@@ -408,29 +436,66 @@ static void RunWithFlags(const test::TestInfo *info,
   auto lifted_func = gTranslatedFuncs[info->test_begin];
 
   // This will execute on our stack but the lifted code will operate on
-  // `gStack`. The mechanism behind this is that `gStateBefore` is the native
+  // `gStack`. The mechanism behind this is that `gX86StateBefore` is the native
   // program state recorded before executing the native testcase, but after
   // swapping execution to operate on `gStack`.
   if (!sigsetjmp(gJmpBuf, true)) {
     gInNativeTest = false;
     (void) lifted_func(
-        nullptr, *lifted_state,
-        static_cast<addr_t>(lifted_state->gpr.rip.aword));
+        *lifted_state,
+        static_cast<addr_t>(lifted_state->gpr.rip.aword),
+        nullptr);
   } else {
     EXPECT_TRUE(native_test_faulted);
   }
 
   ResetFlags();
 
-  // Don't compare the program counters. The code that is lifted is equivalent
-  // to the code that is tested but because they are part of separate binaries
-  // it means that there is not necessarily any relation between their values.
-  //
-  // This also lets us compare 32-bit-only lifted code with 32-bit only
-  // testcases, where the native 32-bit code actually emulates the 32-bit
-  // behavior in 64-bit (because all of this code is compiled as 64-bit).
+  // We'll compare the `ST` and `XMM` regs via their other stored forms.
+  auto kill_size = sizeof(lifted_state->x87) - offsetof(FPU, fxsave.st);
+  memset(lifted_state->x87.fxsave.st, 0, kill_size);
+  memset(native_state->x87.fxsave.st, 0, kill_size);
+
+  // Most machines have `fop` recording disabled, even though we track it.
+  lifted_state->x87.fxsave.fop = 0;
+  native_state->x87.fxsave.fop = 0;
+
+  // Don't compare the tag words.
+  lifted_state->x87.fxsave.ftw.flat = 0;
+  native_state->x87.fxsave.ftw.flat = 0;
+
+  // Getting C1 right is hard, so we don't try.
+  lifted_state->x87.fxsave.swd.c1 = 0;
+  native_state->x87.fxsave.swd.c1 = 0;
+  lifted_state->sw.c1 = 0;
+  native_state->sw.c1 = 0;
+
+  // Marshal lifted status word info into the native form.
+  lifted_state->x87.fxsave.swd.c0 = lifted_state->sw.c0;
+  lifted_state->x87.fxsave.swd.c2 = lifted_state->sw.c2;
+  lifted_state->x87.fxsave.swd.c3 = lifted_state->sw.c3;
+  lifted_state->x87.fxsave.swd.ie = lifted_state->sw.ie;
+  lifted_state->x87.fxsave.swd.de = lifted_state->sw.de;
+  lifted_state->x87.fxsave.swd.ze = lifted_state->sw.ze;
+  lifted_state->x87.fxsave.swd.oe = lifted_state->sw.oe;
+  lifted_state->x87.fxsave.swd.ue = lifted_state->sw.ue;
+  lifted_state->x87.fxsave.swd.pe = lifted_state->sw.pe;
+
+  lifted_state->x87.fxsave.swd.flat = 0;
+  native_state->x87.fxsave.swd.flat = 0;
+
+  // TODO(pag): We don't support these yet.
+  lifted_state->x87.fxsave.mxcsr.flat = 0;
+  native_state->x87.fxsave.mxcsr.flat = 0;
+
+  // Don't compare EIP on 32-bit because the tests we run natively (on 64-bits)
+  // may be different than the 32-bit code that we lift. This is just so that
+  // things actually work, e.g. stuff needing the REX.W prefix in the native
+  // tests to execute.
+#if 32 == ADDRESS_SIZE_BITS
   lifted_state->gpr.rip.aword = 0;
   native_state->gpr.rip.aword = 0;
+#endif
 
   // Copy the aflags state back into the rflags state.
   lifted_state->rflag.cf = lifted_state->aflag.cf;
@@ -453,18 +518,18 @@ static void RunWithFlags(const test::TestInfo *info,
   native_state->rflag.flat &= 0x0ED7UL;
   lifted_state->rflag.flat &= 0x0ED7UL;
 
-  native_state->interrupt_vector = 0;
-  lifted_state->interrupt_vector = 0;
+  native_state->hyper_call_vector = 0;
+  lifted_state->hyper_call_vector = 0;
   native_state->hyper_call = AsyncHyperCall::kInvalid;
   lifted_state->hyper_call = AsyncHyperCall::kInvalid;
 
   // Compare the FPU states.
   for (auto i = 0U; i < 8U; ++i) {
-    auto &lifted_st = lifted_state->st.elems[i].val;
-    auto &native_st = native_state->st.elems[i].val;
+    auto lifted_st = lifted_state->st.elems[i].val;
+    auto native_st = native_state->st.elems[i].val;
     if (lifted_st != native_st) {
       if (fabs(lifted_st - native_st) <= 1e-14) {
-        lifted_st = native_st;  // Hide the inconsistency.
+        lifted_state->st.elems[i].val = native_st;  // Hide the inconsistency.
       }
     }
   }
@@ -479,16 +544,12 @@ static void RunWithFlags(const test::TestInfo *info,
   EXPECT_TRUE(lifted_state->gpr == native_state->gpr);
   if (gLiftedState != gNativeState) {
     LOG(ERROR)
-        << "States did not match for " << info->test_name
-        << " with arguments " << std::hex << arg1 << ", "
-        << std::hex << arg2 << ", " << std::hex << arg3;
+        << "States did not match for " << desc;
     EXPECT_TRUE(!"Lifted and native states did not match.");
   }
   if (gLiftedStack != gNativeStack) {
     LOG(ERROR)
-        << "Stacks did not match for " << info->test_name
-        << " with arguments " << std::hex << arg1 << ", "
-        << std::hex << arg2 << ", " << std::hex << arg3;
+        << "Stacks did not match for " << desc;
 
     for (size_t i = 0; i < sizeof(gLiftedStack.bytes); ++i) {
       if (gLiftedStack.bytes[i] != gNativeStack.bytes[i]) {
@@ -511,21 +572,60 @@ TEST_P(InstrTest, SemanticsMatchNative) {
        args < info->args_end;
        args += info->num_args) {
     std::stringstream ss;
+    ss << info->test_name << " with";
     if (1 <= info->num_args) {
-      ss << "args: 0x" << std::hex << args[0];
+      ss << " ARG1=0x" << std::hex << args[0];
       if (2 <= info->num_args) {
-        ss << ", 0x" << std::hex << args[1];
+        ss << " ARG2=0x" << std::hex << args[1];
         if (3 <= info->num_args) {
-          ss << ", 0x" << std::hex << args[3];
+          ss << " ARG3=0x" << std::hex << args[3];
         }
       }
-      ss << ";" << std::dec;
     }
     auto desc = ss.str();
-    RunWithFlags(info, gRflagsOn, desc + " aflags on",
-                 args[0], args[1], args[2]);
-    RunWithFlags(info, gRflagsOff, desc + " aflags off",
-                 args[0], args[1], args[2]);
+
+    union EFLAGS {
+      uint32_t flat;
+      struct {
+        uint32_t cf:1;
+        uint32_t pf:1;
+        uint32_t af:1;
+        uint32_t zf:1;
+        uint32_t sf:1;
+        uint32_t df:1;
+        uint32_t of:1;
+        uint32_t _0:25;
+      } __attribute__((packed));
+    } __attribute__((packed));
+
+    static_assert(sizeof(EFLAGS) == 4, "Invalid packing of `union EFLAGS`.");
+
+    // Go through all possible flag combinations.
+    for (uint32_t i = 0U; i <= 0x7FU; ++i) {
+      EFLAGS eflags;
+      eflags.flat = i;
+
+      std::stringstream ss2;
+      ss2 << desc << " and"
+         << " CF=" << eflags.cf
+         << " PF=" << eflags.pf
+         << " AF=" << eflags.af
+         << " ZF=" << eflags.zf
+         << " SF=" << eflags.sf
+         << " DF=" << eflags.df
+         << " OF=" << eflags.of;
+
+      Flags flags = gRflagsInitial;
+      flags.cf = eflags.cf;
+      flags.pf = eflags.pf;
+      flags.af = eflags.af;
+      flags.zf = eflags.zf;
+      flags.sf = eflags.sf;
+      flags.df = eflags.df;
+      flags.of = eflags.of;
+
+      RunWithFlags(info, flags, ss2.str(), args[0], args[1], args[2]);
+    }
   }
 }
 
@@ -537,11 +637,12 @@ INSTANTIATE_TEST_CASE_P(
 // Recover from a signal.
 static void RecoverFromError(int sig_num, siginfo_t *, void *context_) {
   if (gInNativeTest) {
-    memcpy(&gNativeState, &gLiftedState, sizeof(State));
+    memcpy(&gNativeState, &gLiftedState, sizeof(X86State));
 
     auto context = reinterpret_cast<ucontext_t *>(context_);
-    auto native_state = reinterpret_cast<State *>(&gNativeState);
+    auto native_state = reinterpret_cast<X86State *>(&gNativeState);
     auto &gpr = native_state->gpr;
+    auto &fpu = native_state->x87;
 #ifdef __APPLE__
     const auto mcontext = context->uc_mcontext;
     const auto &ss = mcontext->__ss;
@@ -562,7 +663,7 @@ static void RecoverFromError(int sig_num, siginfo_t *, void *context_) {
     gpr.r14.aword = static_cast<addr_t>(ss.__r14) & g64BitMask;
     gpr.r15.aword = static_cast<addr_t>(ss.__r15) & g64BitMask;
     native_state->rflag.flat = ss.__rflags;
-    memcpy(&gFPU, &(mcontext->__fs), sizeof(gFPU));
+    memcpy(&fpu, &(mcontext->__fs), sizeof(fpu));
 #else
     const auto &mcontext = context->uc_mcontext;
     gpr.rax.aword = static_cast<addr_t>(mcontext.gregs[REG_RAX]);
@@ -583,7 +684,7 @@ static void RecoverFromError(int sig_num, siginfo_t *, void *context_) {
     gpr.r15.aword = static_cast<addr_t>(mcontext.gregs[REG_R15]) & g64BitMask;
 
     native_state->rflag.flat = context->uc_mcontext.gregs[REG_EFL];
-    memcpy(&gFPU, context->uc_mcontext.fpregs, sizeof(gFPU));
+    memcpy(&fpu, context->uc_mcontext.fpregs, sizeof(fpu));
 #endif  // __APPLE__
   }
   siglongjmp(gJmpBuf, 0);

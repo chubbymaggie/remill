@@ -1,4 +1,18 @@
-/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_RUNTIME_HYPERCALL_H_
 #define REMILL_ARCH_RUNTIME_HYPERCALL_H_
@@ -9,16 +23,26 @@ class SyncHyperCall {
  public:
   enum Name : uint32_t {
     kInvalid,
+    kAssertPrivileged,
+
+    kX86EmulateInstruction = 0x100U,
+    kAMD64EmulateInstruction,
+
     kX86CPUID,
     kX86ReadTSC,
     kX86ReadTSCP,
 
-    kX86EmulateInstruction,
-    kAMD64EmulateInstruction,
+    kX86SetSegmentES,
+    kX86SetSegmentSS,
+    kX86SetSegmentDS,
+    kX86SetSegmentFS,
+    kX86SetSegmentGS,
 
-    kAssertPrivileged,
+    // TODO(pag): How to distinguish little- and big-endian?
+    kAArch64EmulateInstruction = 0x200U,
+    kAArch64Breakpoint,
 
-    kDebugBreakpoint
+    kMipsEmulateInstruction = 0x300U,
   };
 } __attribute__((packed));
 
@@ -43,6 +67,8 @@ class AsyncHyperCall {
 
     kX86SysEnter,
     kX86SysExit,
+
+    kAArch64SupervisorCall,
 
     // Invalid instruction.
     kInvalidInstruction

@@ -1,4 +1,18 @@
-/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_X86_SEMANTICS_CMOV_H_
 #define REMILL_ARCH_X86_SEMANTICS_CMOV_H_
@@ -35,20 +49,8 @@ DEF_SEM(CMOVNP, D dst, S1 src1) {
 }
 
 template <typename D, typename S1>
-DEF_SEM(FCMOVNP, D dst, S1 src1) {
-  Write(dst, Select(BNot(FLAG_PF), Read(src1), Read(dst)));
-  return memory;
-}
-
-template <typename D, typename S1>
 DEF_SEM(CMOVNZ, D dst, S1 src1) {
   WriteZExt(dst, Select(BNot(FLAG_ZF), Read(src1), TruncTo<S1>(Read(dst))));
-  return memory;
-}
-
-template <typename D, typename S1>
-DEF_SEM(FCMOVNZ, D dst, S1 src1) {
-  Write(dst, Select(BNot(FLAG_ZF), Read(src1), Read(dst)));
   return memory;
 }
 
@@ -59,16 +61,11 @@ DEF_SEM(CMOVNB, D dst, S1 src1) {
 }
 
 template <typename D, typename S1>
-DEF_SEM(FCMOVNB, D dst, S1 src1) {
-  Write(dst, Select(BNot(FLAG_CF), Read(src1), Read(dst)));
-  return memory;
-}
-
-template <typename D, typename S1>
 DEF_SEM(CMOVNO, D dst, S1 src1) {
   WriteZExt(dst, Select(BNot(FLAG_OF), Read(src1), TruncTo<S1>(Read(dst))));
   return memory;
 }
+
 
 template <typename D, typename S1>
 DEF_SEM(CMOVNL, D dst, S1 src1) {
@@ -89,29 +86,11 @@ DEF_SEM(CMOVNBE, D dst, S1 src1) {
 }
 
 template <typename D, typename S1>
-DEF_SEM(FCMOVNBE, D dst, S1 src1) {
-  Write(dst, Select(
-      BNot(BOr(FLAG_CF, FLAG_ZF)),
-      Read(src1),
-      Read(dst)));
-  return memory;
-}
-
-template <typename D, typename S1>
 DEF_SEM(CMOVBE, D dst, S1 src1) {
   WriteZExt(dst, Select(
       BOr(FLAG_CF, FLAG_ZF),
       Read(src1),
       TruncTo<S1>(Read(dst))));
-  return memory;
-}
-
-template <typename D, typename S1>
-DEF_SEM(FCMOVBE, D dst, S1 src1) {
-  Write(dst, Select(
-      BOr(FLAG_CF, FLAG_ZF),
-      Read(src1),
-      Read(dst)));
   return memory;
 }
 
@@ -122,20 +101,8 @@ DEF_SEM(CMOVZ, D dst, S1 src1) {
 }
 
 template <typename D, typename S1>
-DEF_SEM(FCMOVZ, D dst, S1 src1) {
-  Write(dst, Select(FLAG_ZF, Read(src1), Read(dst)));
-  return memory;
-}
-
-template <typename D, typename S1>
 DEF_SEM(CMOVP, D dst, S1 src1) {
   WriteZExt(dst, Select(FLAG_PF, Read(src1), TruncTo<S1>(Read(dst))));
-  return memory;
-}
-
-template <typename D, typename S1>
-DEF_SEM(FCMOVP, D dst, S1 src1) {
-  Write(dst, Select(FLAG_PF, Read(src1), Read(dst)));
   return memory;
 }
 
@@ -154,12 +121,6 @@ DEF_SEM(CMOVO, D dst, S1 src1) {
 template <typename D, typename S1>
 DEF_SEM(CMOVB, D dst, S1 src1) {
   WriteZExt(dst, Select(FLAG_CF, Read(src1), TruncTo<S1>(Read(dst))));
-  return memory;
-}
-
-template <typename D, typename S1>
-DEF_SEM(FCMOVB, D dst, S1 src1) {
-  Write(dst, Select(FLAG_CF, Read(src1), Read(dst)));
   return memory;
 }
 
@@ -206,14 +167,5 @@ DEF_ISEL_RnW_Mn(CMOVB_GPRv_MEMv, CMOVB);
 DEF_ISEL_RnW_Rn(CMOVB_GPRv_GPRv, CMOVB);
 DEF_ISEL_RnW_Mn(CMOVNBE_GPRv_MEMv, CMOVNBE);
 DEF_ISEL_RnW_Rn(CMOVNBE_GPRv_GPRv, CMOVNBE);
-
-DEF_ISEL(FCMOVNU_ST0_X87_80) = FCMOVNP<RF80W, RF80>;
-DEF_ISEL(FCMOVNB_ST0_X87_80) = FCMOVNB<RF80W, RF80>;
-DEF_ISEL(FCMOVNE_ST0_X87_80) = FCMOVNZ<RF80W, RF80>;
-DEF_ISEL(FCMOVBE_ST0_X87_80) = FCMOVBE<RF80W, RF80>;
-DEF_ISEL(FCMOVNBE_ST0_X87_80) = FCMOVNBE<RF80W, RF80>;
-DEF_ISEL(FCMOVU_ST0_X87_80) = FCMOVP<RF80W, RF80>;
-DEF_ISEL(FCMOVE_ST0_X87_80) = FCMOVZ<RF80W, RF80>;
-DEF_ISEL(FCMOVB_ST0_X87_80) = FCMOVB<RF80W, RF80>;
 
 #endif  // REMILL_ARCH_X86_SEMANTICS_CMOV_H_

@@ -1,4 +1,18 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_RUNTIME_TYPES_H_
 #define REMILL_ARCH_RUNTIME_TYPES_H_
@@ -29,20 +43,18 @@ typedef uint64_t addr64_t;
 typedef IF_64BIT_ELSE(addr64_t, addr32_t) addr_t;
 typedef IF_64BIT_ELSE(int64_t, int32_t) addr_diff_t;
 
-#if COMPILING_WITH_GCC && !defined(__x86_64__)
-struct uint128_t {
-  uint8_t elems[16];
-};
-struct int128_t {
-  int8_t elems[16];
-};
-#else
+#if defined(__x86_64__) || defined(__i386__) || defined(_M_X86)
 typedef unsigned uint128_t __attribute__((mode(TI)));
-static_assert(16 == sizeof(uint128_t), "Invalid `uint128_t` size.");
-
 typedef int int128_t __attribute__((mode(TI)));
-static_assert(16 == sizeof(int128_t), "Invalid `int128_t` size.");
+#elif defined(__aarch64__)
+typedef __uint128_t uint128_t;
+typedef __int128_t int128_t;
+#else
+# error "Cannot determine (u)int128_t type of unuspported architecture."
 #endif
+
+static_assert(16 == sizeof(uint128_t), "Invalid `uint128_t` size.");
+static_assert(16 == sizeof(int128_t), "Invalid `int128_t` size.");
 
 typedef float float32_t;
 static_assert(4 == sizeof(float32_t), "Invalid `float32_t` size.");
@@ -56,6 +68,32 @@ struct float80_t final {
 } __attribute__((packed));
 
 static_assert(10 == sizeof(float80_t), "Invalid `float80_t` size.");
+
+union nan32_t {
+  float32_t f;
+  struct {
+    uint32_t payload:22;
+    uint32_t is_quiet_nan:1;
+    uint32_t exponent:8;
+    uint32_t is_negative:1;
+  } __attribute__((packed));
+} __attribute__((packed));
+
+static_assert(sizeof(float32_t) == sizeof(nan32_t),
+              "Invalid packing of `nan32_t`.");
+
+union nan64_t {
+  float64_t d;
+  struct {
+    uint64_t payload:51;
+    uint64_t is_quiet_nan:1;
+    uint64_t exponent:11;
+    uint64_t is_negative:1;
+  } __attribute__((packed));
+} __attribute__((packed));
+
+static_assert(sizeof(float64_t) == sizeof(nan64_t),
+              "Invalid packing of `nan64_t`.");
 
 // Note: We are re-defining the `std::is_signed` type trait because we can't
 //       always explicitly specialize it inside of the `std` namespace.
@@ -427,6 +465,16 @@ struct RVn<vec32_t> final {
   const addr_t val;  // Scales to "natural" machine word length.
 };
 
+template <>
+struct RVn<vec16_t> final {
+  const addr_t val;  // Scales to "natural" machine word length.
+};
+
+template <>
+struct RVn<vec8_t> final {
+  const addr_t val;  // Scales to "natural" machine word length.
+};
+
 template <typename T>
 struct RVnW;
 
@@ -440,6 +488,9 @@ struct RVnW<vec64_t> final {
   uint64_t * const val_ref;
 };
 
+// A `void` pointer is used so that we can treat different vector types
+// uniformly (from the LLVM bitcode side). That is, the type of value passed
+// in may be a pointer to a wider vector than was is specified by `T`.
 template <typename T>
 struct Vn final {
   const void * const val;

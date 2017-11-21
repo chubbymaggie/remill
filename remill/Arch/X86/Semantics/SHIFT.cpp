@@ -1,4 +1,18 @@
-/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_X86_SEMANTICS_SHIFT_H_
 #define REMILL_ARCH_X86_SEMANTICS_SHIFT_H_
@@ -306,5 +320,56 @@ DEF_ISEL_MnW_Mn_Rn_In(SHLD_MEMv_GPRv_IMMb, SHLD);
 DEF_ISEL_RnW_Rn_Rn_In(SHLD_GPRv_GPRv_IMMb, SHLD);
 DEF_ISEL_MnW_Mn_Rn_Rn(SHLD_MEMv_GPRv_CL, SHLD);
 DEF_ISEL_RnW_Rn_Rn_Rn(SHLD_GPRv_GPRv_CL, SHLD);
+
+namespace {
+
+template <typename D>
+DEF_SEM(PSLLDQ, D dst, V128 src1, I8 src2) {
+  uint8v16_t src1_vec = UReadV8(src1);
+  uint8v16_t dst_vec = {};
+  size_t shift_amount = std::min<size_t>(ZExtTo<size_t>(Read(src2)), 16);
+  _Pragma("unroll")
+  for (size_t i = 0; i < 16; ++i) {
+    if (i < (16 - shift_amount)) {
+      dst_vec = UInsertV8(dst_vec, i + shift_amount, UExtractV8(src1_vec, i));
+    }
+  }
+  UWriteV8(dst, dst_vec);
+  return memory;
+}
+
+#if HAS_FEATURE_AVX
+template <typename D>
+DEF_SEM(VPSLLDQ, D dst, V256 src1, I8 src2) {
+  uint8v32_t src1_vec = UReadV8(src1);
+  uint8v32_t dst_vec = {};
+  size_t shift_amount = std::min<size_t>(ZExtTo<size_t>(Read(src2)), 16);
+
+  _Pragma("unroll")
+  for (size_t i = 0, j = 16; i < 16; ++i, ++j) {
+    if (i < (16 - shift_amount)) {
+      dst_vec = UInsertV8(dst_vec, i + shift_amount, UExtractV8(src1_vec, i));
+      dst_vec = UInsertV8(dst_vec, j + shift_amount, UExtractV8(src1_vec, j));
+    }
+  }
+  UWriteV8(dst, dst_vec);
+  return memory;
+}
+#endif  // HAS_FEATURE_AVX
+
+}  // namespace
+
+DEF_ISEL(PSLLDQ_XMMdq_IMMb) = PSLLDQ<V128W>;
+IF_AVX(DEF_ISEL(VPSLLDQ_XMMdq_XMMdq_IMMb) = PSLLDQ<VV128W>;)
+IF_AVX(DEF_ISEL(VPSLLDQ_YMMqq_YMMqq_IMMb) = VPSLLDQ<VV256W>;)
+
+/*
+3749 VPSLLDQ VPSLLDQ_XMMu8_XMMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES:
+3750 VPSLLDQ VPSLLDQ_XMMu8_MEMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: DISP8_FULLMEM
+3751 VPSLLDQ VPSLLDQ_YMMu8_YMMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES:
+3752 VPSLLDQ VPSLLDQ_YMMu8_MEMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: DISP8_FULLMEM
+3753 VPSLLDQ VPSLLDQ_ZMMu8_ZMMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES:
+3754 VPSLLDQ VPSLLDQ_ZMMu8_MEMu8_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: DISP8_FULLMEM
+ */
 
 #endif  // REMILL_ARCH_X86_SEMANTICS_SHIFT_H_

@@ -1,4 +1,18 @@
-/* Copyright 2016 Akshay Kumar (iit.akshay@gmail.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_X86_SEMANTICS_MMX_H_
 #define REMILL_ARCH_X86_SEMANTICS_MMX_H_
@@ -153,17 +167,17 @@ DEF_ISEL(PUNPCKHDQ_XMMdq_XMMq) = PUNPCKHDQ<V128W, V128, V128>;
 DEF_ISEL(PUNPCKHQDQ_XMMdq_MEMdq) = PUNPCKHQDQ<V128W, V128, MV128>;
 DEF_ISEL(PUNPCKHQDQ_XMMdq_XMMq) = PUNPCKHQDQ<V128W, V128, V128>;
 
-DEF_ISEL(PUNPCKLBW_MMXq_MEMd) = PUNPCKLBW<V64W, V64, MV64>;
+DEF_ISEL(PUNPCKLBW_MMXq_MEMd) = PUNPCKLBW<V64W, V64, MV32>;
 DEF_ISEL(PUNPCKLBW_MMXq_MMXd) = PUNPCKLBW<V64W, V64, V64>;
 DEF_ISEL(PUNPCKLBW_XMMdq_MEMdq) = PUNPCKLBW<V128W, V128, MV128>;
 DEF_ISEL(PUNPCKLBW_XMMdq_XMMq) = PUNPCKLBW<V128W, V128, V128>;
 
-DEF_ISEL(PUNPCKLWD_MMXq_MEMd) = PUNPCKLWD<V64W, V64, MV64>;
+DEF_ISEL(PUNPCKLWD_MMXq_MEMd) = PUNPCKLWD<V64W, V64, MV32>;
 DEF_ISEL(PUNPCKLWD_MMXq_MMXd) = PUNPCKLWD<V64W, V64, V64>;
 DEF_ISEL(PUNPCKLWD_XMMdq_MEMdq) = PUNPCKLWD<V128W, V128, MV128>;
 DEF_ISEL(PUNPCKLWD_XMMdq_XMMq) = PUNPCKLWD<V128W, V128, V128>;
 
-DEF_ISEL(PUNPCKLDQ_MMXq_MEMd) = PUNPCKLDQ<V64W, V64, MV64>;
+DEF_ISEL(PUNPCKLDQ_MMXq_MEMd) = PUNPCKLDQ<V64W, V64, MV32>;
 DEF_ISEL(PUNPCKLDQ_MMXq_MMXd) = PUNPCKLDQ<V64W, V64, V64>;
 DEF_ISEL(PUNPCKLDQ_XMMdq_MEMdq) = PUNPCKLDQ<V128W, V128, MV128>;
 DEF_ISEL(PUNPCKLDQ_XMMdq_XMMq) = PUNPCKLDQ<V128W, V128, V128>;

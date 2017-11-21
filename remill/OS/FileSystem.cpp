@@ -1,21 +1,44 @@
-/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #include <glog/logging.h>
 
 #include <algorithm>
+#include <cerrno>
+#include <climits>
+#include <cstdlib>
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <vector>
 
 #include "remill/OS/FileSystem.h"
+#include "remill/OS/OS.h"
 
-#ifdef __APPLE__
+#if REMILL_ON_MACOS
 # ifndef _DARWIN_USE_64_BIT_INODE
 #   define _DARWIN_USE_64_BIT_INODE 1
 # endif
 # define stat64 stat
 # define fstat64 fstat
+#endif
+
+#if defined(_MAX_PATH) && !defined(PATH_MAX)
+# define PATH_MAX _MAX_PATH
 #endif
 
 namespace remill {
@@ -29,6 +52,32 @@ bool TryCreateDirectory(const std::string &dir_name) {
     return true;
   } else {
     return false;
+  }
+}
+
+// Iterator over a directory.
+void ForEachFileInDirectory(const std::string &dir_name,
+                            DirectoryVisitor visitor) {
+  std::vector<std::string> paths;
+  auto dir = opendir(dir_name.c_str());
+  CHECK(dir != nullptr)
+      << "Could not list the " << dir_name << " directory";
+
+  while (auto ent = readdir(dir)) {
+    if (!strcmp(ent->d_name, ".") || !strcmp(ent->d_name, "..")) {
+      continue;
+    }
+
+    std::stringstream ss;
+    ss << dir_name << "/" << ent->d_name;
+    paths.push_back(ss.str());
+  }
+  closedir(dir);
+
+  for (const auto &path : paths) {
+    if (!visitor(path)) {
+      break;
+    }
   }
 }
 
@@ -76,8 +125,17 @@ void RemoveFile(const std::string &path) {
   unlink(path.c_str());
 }
 
-void RenameFile(const std::string &from_path, const std::string &to_path) {
-  rename(from_path.c_str(), to_path.c_str());
+bool RenameFile(const std::string &from_path, const std::string &to_path) {
+  auto ret = rename(from_path.c_str(), to_path.c_str());
+  auto err = errno;
+  if (-1 == ret) {
+    LOG(ERROR)
+        << "Unable to rename " << from_path << " to " << to_path
+        << ": " << strerror(err);
+    return false;
+  } else {
+    return true;
+  }
 }
 
 namespace {
@@ -145,6 +203,42 @@ void HardLinkOrCopyFile(const std::string &from_path,
       << from_path << ": " << strerror(errno);
 
   CopyFile(from_path, to_path);
+}
+
+void MoveFile(const std::string &from_path, const std::string &to_path) {
+  if (!RenameFile(from_path, to_path)) {
+    CopyFile(from_path, to_path);
+    RemoveFile(from_path);
+  }
+}
+
+std::string CanonicalPath(const std::string &path) {
+  char buff[PATH_MAX + 1] = {};
+#if REMILL_ON_WINDOWS
+  auto canon_path_c = _fullpath(buff, path.c_str(), PATH_MAX);
+  auto err = ENOENT;
+#else
+  auto canon_path_c = realpath(path.c_str(), buff);
+  auto err = errno;
+#endif
+  if (!canon_path_c) {
+    LOG(ERROR)
+        << "Cannot compute full path of " << path
+        << ": " << strerror(err);
+    return path;
+  } else {
+    std::string canon_path(canon_path_c);
+    return canon_path;
+  }
+}
+
+// Returns the path separator character for this OS.
+const char *PathSeparator(void) {
+#if REMILL_ON_WINDOWS
+  return "\\";
+#else
+  return "/";
+#endif
 }
 
 }  // namespace remill

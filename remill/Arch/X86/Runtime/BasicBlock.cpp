@@ -1,4 +1,24 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
+#include <algorithm>
+#include <bitset>
+#include <cfenv>
+#include <cfloat>
+#include <cmath>
 
 #include "remill/Arch/X86/Runtime/State.h"
 
@@ -9,8 +29,10 @@ extern "C" {
 
 // Method that will implement a basic block. We will clone this method for
 // each basic block in the code being lifted.
+//
+// Note: `curr_pc` is first to make sure it's not optimized away.
 [[gnu::used]]
-Memory *__remill_basic_block(Memory *memory, State &state, addr_t curr_pc) {
+Memory *__remill_basic_block(State &state, addr_t curr_pc, Memory *memory) {
 
   bool branch_taken = false;
   addr_t zero = 0;
@@ -18,7 +40,7 @@ Memory *__remill_basic_block(Memory *memory, State &state, addr_t curr_pc) {
   // Note: These variables MUST be defined for all architectures.
   auto &STATE = state;
   auto &MEMORY = *memory;
-  auto &PC = state.gpr.rip.IF_64BIT_ELSE(qword, dword);
+  auto &PC = state.gpr.rip.aword;
   auto &BRANCH_TAKEN = branch_taken;
 
   // `PC` should already have the correct value, but it's nice to make sure
@@ -26,9 +48,9 @@ Memory *__remill_basic_block(Memory *memory, State &state, addr_t curr_pc) {
   // uses to be able to depend on the optimizer not eliminating `curr_pc`.
   PC = curr_pc;
 
-  // We will reference these variables from the bitcode side of things so that,
-  // given a decoded register name and an operation type (read or write),
-  // we can map the register to a specific field in the State structure.
+  // We will reference these variables from the bitcode side of things so that
+  // we can map the name of a decoded register to a specific field in the
+  // `State` structure.
   auto &AH = state.gpr.rax.byte.high;
   auto &BH = state.gpr.rbx.byte.high;
   auto &CH = state.gpr.rcx.byte.high;
@@ -110,12 +132,12 @@ Memory *__remill_basic_block(Memory *memory, State &state, addr_t curr_pc) {
   auto &RIP = state.gpr.rip.qword;
 #endif  // 64 == ADDRESS_SIZE_BITS
 
-  auto &SS = state.seg.ss;
-  auto &ES = state.seg.es;
-  auto &GS = state.seg.gs;
-  auto &FS = state.seg.fs;
-  auto &DS = state.seg.ds;
-  auto &CS = state.seg.cs;
+  auto &SS = state.seg.ss.flat;
+  auto &ES = state.seg.es.flat;
+  auto &GS = state.seg.gs.flat;
+  auto &FS = state.seg.fs.flat;
+  auto &DS = state.seg.ds.flat;
+  auto &CS = state.seg.cs.flat;
 
   auto &SS_BASE = zero;
   auto &ES_BASE = zero;
@@ -291,7 +313,7 @@ Memory *__remill_basic_block(Memory *memory, State &state, addr_t curr_pc) {
   auto &ZF = state.aflag.zf;
 
   // Lifted code will be placed here in clones versions of this function.
-  return nullptr;
+  return memory;
 }
 
 #pragma clang diagnostic pop

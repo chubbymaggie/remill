@@ -1,4 +1,18 @@
-/* Copyright 2017 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #define FST_INPUTS \
     TEST_INPUTS( \
@@ -41,8 +55,8 @@ FST_INPUTS
     push ARG1_64
     fld QWORD PTR [rsp]
     fld QWORD PTR [rsp]
-    fadd st(1)  // st(0) = 2, st(1) = 1
-    fst st(1)  // st(0) = 2, st(1) = 2
+    fsub st(1)
+    fst st(1)
 TEST_END_64
 
 
@@ -70,8 +84,8 @@ FST_INPUTS
     push ARG1_64
     fld QWORD PTR [rsp]
     fld QWORD PTR [rsp]
-    fadd st(1)  // st(0) = 2, st(1) = 1
-    fstp st(1)  // st(0) = 2, st(1) = 0, st(7) = 2
+    fsub st(1)
+    fstp st(1)
 TEST_END_64
 
 TEST_BEGIN_64(FISTm16, 1)

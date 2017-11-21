@@ -1,4 +1,18 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_RUNTIME_OPERATORS_H_
 #define REMILL_ARCH_RUNTIME_OPERATORS_H_
@@ -87,6 +101,28 @@ uint32_t _Read(Memory *, uint32_t val) {
 ALWAYS_INLINE static
 uint64_t _Read(Memory *, uint64_t val) {
   return val;
+}
+
+// Read a value directly.
+ALWAYS_INLINE static
+float32_t _Read(Memory *, float32_t val) {
+  return val;
+}
+
+// Read a value directly.
+ALWAYS_INLINE static
+float64_t _Read(Memory *, float64_t val) {
+  return val;
+}
+
+ALWAYS_INLINE static
+float32_t _Read(Memory *, In<float32_t> imm) {
+  return reinterpret_cast<const float32_t &>(imm.val);
+}
+
+ALWAYS_INLINE static
+float64_t _Read(Memory *, In<float64_t> imm) {
+  return reinterpret_cast<const float64_t &>(imm.val);
 }
 
 template <typename T>
@@ -445,18 +481,30 @@ MAKE_WRITE_REF(float64_t)
     } while (false)
 
 
-template <typename T>
-ALWAYS_INLINE static constexpr
-auto ByteSizeOf(T) -> typename IntegerType<T>::UT {
-  return static_cast<typename IntegerType<T>::UT>(
-      sizeof(typename BaseType<T>::BT));
+#if !defined(issignaling)
+
+ALWAYS_INLINE uint8_t issignaling(float32_t x) {
+  const nan32_t x_nan = {x};
+  return x_nan.exponent == 0xFFU && !x_nan.is_quiet_nan && x_nan.payload;
 }
 
-template <typename T>
+ALWAYS_INLINE uint8_t issignaling(float64_t x) {
+  const nan64_t x_nan = {x};
+  return x_nan.exponent == 0x7FFU && !x_nan.is_quiet_nan && x_nan.payload;
+}
+
+#endif  // !defined(issignaling)
+
+template <typename T, typename R=typename IntegerType<T>::UT>
 ALWAYS_INLINE static constexpr
-auto BitSizeOf(T) -> typename IntegerType<T>::UT {
-  return static_cast<typename IntegerType<T>::UT>(
-      sizeof(typename BaseType<T>::BT) * 8);
+R ByteSizeOf(T) {
+  return static_cast<R>(sizeof(typename BaseType<T>::BT));
+}
+
+template <typename T, typename R=typename IntegerType<T>::UT>
+ALWAYS_INLINE static constexpr
+R BitSizeOf(T) {
+  return static_cast<R>(sizeof(typename BaseType<T>::BT) * 8);
 }
 
 // Convert the input value into an unsigned integer.
@@ -471,6 +519,78 @@ template <typename T>
 ALWAYS_INLINE static
 auto Signed(T val) -> typename IntegerType<T>::ST {
   return static_cast<typename IntegerType<T>::ST>(val);
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsNegative(T x) {
+  return static_cast<uint8_t>(std::signbit(x));
+}
+
+ALWAYS_INLINE static uint8_t IsZero(float32_t x) {
+  return static_cast<uint8_t>(FP_ZERO == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsZero(float64_t x) {
+  return static_cast<uint8_t>(FP_ZERO == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsInfinite(float32_t x) {
+  return static_cast<uint8_t>(FP_INFINITE == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsInfinite(float64_t x) {
+  return static_cast<uint8_t>(FP_INFINITE == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsNaN(float32_t x) {
+  return static_cast<uint8_t>(FP_NAN == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsNaN(float64_t x) {
+  return static_cast<uint8_t>(FP_NAN == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsSignalingNaN(float32_t x) {
+  const nan32_t x_nan = {x};
+  return x_nan.exponent == 0xFFU && !x_nan.is_quiet_nan && x_nan.payload;
+}
+
+ALWAYS_INLINE static uint8_t IsSignalingNaN(float64_t x) {
+  const nan64_t x_nan = {x};
+  return x_nan.exponent == 0x7FFU && !x_nan.is_quiet_nan && x_nan.payload;
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsSignalingNaN(T) {
+  return 0;
+}
+
+ALWAYS_INLINE static uint8_t IsDenormal(float32_t x) {
+  return static_cast<uint8_t>(FP_SUBNORMAL == std::fpclassify(x));
+}
+
+ALWAYS_INLINE static uint8_t IsDenormal(float64_t x) {
+  return static_cast<uint8_t>(FP_SUBNORMAL == std::fpclassify(x));
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsZero(T val) {
+  return static_cast<uint8_t>(!val);
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsInfinite(T) {
+  return 0;
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsNaN(T) {
+  return 0;
+}
+
+template <typename T>
+ALWAYS_INLINE static uint8_t IsDenormal(T) {
+  return 0;
 }
 
 // Return the largest possible value assignable to `val`.
@@ -585,6 +705,11 @@ auto TruncTo(T val) -> typename IntegerType<DT>::BT {
   return static_cast<typename IntegerType<DT>::BT>(val);
 }
 
+#define WriteTrunc(op, val) \
+    do { \
+      Write(op, TruncTo<decltype(op)>(val)); \
+    } while (false)
+
 // Handle writes of N-bit values to M-bit values with N <= M. If N < M then the
 // source value will be zero-extended to the dest value type. This is useful
 // on x86-64 where writes to 32-bit registers zero-extend to 64-bits. In a
@@ -593,6 +718,11 @@ auto TruncTo(T val) -> typename IntegerType<DT>::BT {
 #define WriteZExt(op, val) \
     do { \
       Write(op, ZExtTo<decltype(op)>(val)); \
+    } while (false)
+
+#define WriteSExt(op, val) \
+    do { \
+      Write(op, SExtTo<decltype(op)>(val)); \
     } while (false)
 
 #define SWriteV8(op, val) \
@@ -703,17 +833,29 @@ auto TruncTo(T val) -> typename IntegerType<DT>::BT {
 // make that explicit, where `addr_t` encodes the natural machine word.
 #define MAKE_OPS(name, op, make_int_op, make_float_op) \
     make_int_op(U ## name, uint8_t, addr_t, op) \
+    make_int_op(U ## name ## 8, uint8_t, addr_t, op) \
     make_int_op(U ## name, uint16_t, addr_t, op) \
+    make_int_op(U ## name ## 16, uint16_t, addr_t, op) \
     make_int_op(U ## name, uint32_t, addr_t, op) \
+    make_int_op(U ## name ## 32, uint32_t, addr_t, op) \
     make_int_op(U ## name, uint64_t, uint64_t, op) \
+    make_int_op(U ## name ## 64, uint64_t, uint64_t, op) \
     make_int_op(U ## name, uint128_t, uint128_t, op) \
+    make_int_op(U ## name ## 128, uint128_t, uint128_t, op) \
     make_int_op(S ## name, int8_t, addr_diff_t, op) \
+    make_int_op(S ## name ## 8, int8_t, addr_diff_t, op) \
     make_int_op(S ## name, int16_t, addr_diff_t, op) \
+    make_int_op(S ## name ## 16, int16_t, addr_diff_t, op) \
     make_int_op(S ## name, int32_t, addr_diff_t, op) \
+    make_int_op(S ## name ## 32, int32_t, addr_diff_t, op) \
     make_int_op(S ## name, int64_t, int64_t, op) \
+    make_int_op(S ## name ## 64, int64_t, int64_t, op) \
     make_int_op(S ## name, int128_t, int128_t, op) \
+    make_int_op(S ## name ## 128, int128_t, int128_t, op) \
     make_float_op(F ## name, float32_t, float32_t, op) \
-    make_float_op(F ## name, float64_t, float64_t, op)
+    make_float_op(F ## name ## 32, float32_t, float32_t, op) \
+    make_float_op(F ## name, float64_t, float64_t, op) \
+    make_float_op(F ## name ## 64, float64_t, float64_t, op)
 
 MAKE_OPS(Add, +, MAKE_BINOP, MAKE_BINOP)
 MAKE_OPS(Sub, -, MAKE_BINOP, MAKE_BINOP)
@@ -728,6 +870,35 @@ MAKE_OPS(Shr, >>, MAKE_BINOP, MAKE_NOP)
 MAKE_OPS(Shl, <<, MAKE_BINOP, MAKE_NOP)
 MAKE_OPS(Neg, -, MAKE_UOP, MAKE_UOP)
 MAKE_OPS(Not, ~, MAKE_UOP, MAKE_NOP)
+
+
+template <typename T>
+ALWAYS_INLINE static T Ror(T val_, T amount_) {
+  using UT = typename IntegerType<T>::UT;
+  constexpr UT width = static_cast<UT>(sizeof(UT) * 8);
+  const UT val = static_cast<UT>(val_);
+  const UT amount = static_cast<UT>(amount_) % width;
+  if (!amount) {
+    return val_;
+  }
+  const UT shifted_bits = val >> amount;
+  const UT rotated_bits = val << (width - amount);
+  return static_cast<T>(shifted_bits | rotated_bits);
+}
+
+template <typename T>
+ALWAYS_INLINE static T Rol(T val_, T amount_) {
+  using UT = typename IntegerType<T>::UT;
+  constexpr UT width = static_cast<UT>(sizeof(val_) * 8);
+  const UT val = static_cast<UT>(val_);
+  const UT amount = static_cast<UT>(amount_) % width;
+  if (!amount) {
+    return val_;
+  }
+  UT low_bits = val >> (width - amount);
+  UT high_bits = val << width;
+  return static_cast<T>(low_bits | high_bits);
+}
 
 // TODO(pag): Handle unordered and ordered floating point comparisons.
 MAKE_OPS(CmpEq, ==, MAKE_BOOLBINOP, MAKE_BOOLBINOP)
@@ -903,6 +1074,14 @@ ALWAYS_INLINE static float64_t FAbs(float64_t val) {
   return __builtin_fabs(val);
 }
 
+ALWAYS_INLINE static float32_t FAbs32(float32_t val) {
+  return __builtin_fabsf(val);
+}
+
+ALWAYS_INLINE static float64_t FAbs64(float64_t val) {
+  return __builtin_fabs(val);
+}
+
 template <typename T>
 ALWAYS_INLINE static
 auto SAbs(typename IntegerType<T>::ST val) -> typename IntegerType<T>::ST {
@@ -975,7 +1154,7 @@ T _ZeroVec(void) {
 // TODO(pag): What happens if there's a signal handler? How should we
 //            communicate the error class?
 #define StopFailure() \
-    return __remill_error(memory, state, Read(REG_XIP))
+    return __remill_error(state, Read(REG_PC), memory)
 
 // Esthetically pleasing names that hide the implicit small-step semantics
 // of the memory pointer.
@@ -1064,14 +1243,26 @@ MAKE_PRED(Immediate, uint64_t, true)
 
 template <typename T>
 ALWAYS_INLINE static
-Mn<T> GetElementPtr(Mn<T> addr, T index) {
-  return {addr.addr + (index * static_cast<addr_t>(ByteSizeOf(addr)))};
+Mn<T> GetElementPtr(Mn<T> addr, addr_t index) {
+  return {addr.addr + (index * static_cast<addr_t>(sizeof(T)))};
 }
 
 template <typename T>
 ALWAYS_INLINE static
-MnW<T> GetElementPtr(MnW<T> addr, T index) {
-  return {addr.addr + (index * static_cast<addr_t>(ByteSizeOf(addr)))};
+MVn<T> GetElementPtr(MVn<T> addr, addr_t index) {
+  return {addr.addr + (index * static_cast<addr_t>(sizeof(T)))};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+MnW<T> GetElementPtr(MnW<T> addr, addr_t index) {
+  return {addr.addr + (index * static_cast<addr_t>(sizeof(T)))};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+MVnW<T> GetElementPtr(MVnW<T> addr, addr_t index) {
+  return {addr.addr + (index * static_cast<addr_t>(sizeof(T)))};
 }
 
 template <typename T>
@@ -1136,6 +1327,42 @@ addr_t AddressOf(MnW<T> addr) {
 
 template <typename T>
 ALWAYS_INLINE static
+addr_t AddressOf(MVn<T> addr) {
+  return addr.addr;
+}
+
+template <typename T>
+ALWAYS_INLINE static
+addr_t AddressOf(MVnW<T> addr) {
+  return addr.addr;
+}
+
+template <typename T>
+ALWAYS_INLINE static
+Mn<T> DisplaceAddress(Mn<T> addr, addr_t disp) {
+  return Mn<T>{addr.addr + disp};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+MnW<T> DisplaceAddress(MnW<T> addr, addr_t disp) {
+  return MnW<T>{addr.addr + disp};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+MVn<T> DisplaceAddress(MVn<T> addr, addr_t disp) {
+  return MVn<T>{addr.addr + disp};
+}
+
+template <typename T>
+ALWAYS_INLINE static
+MVnW<T> DisplaceAddress(MVnW<T> addr, addr_t disp) {
+  return MVnW<T>{addr.addr + disp};
+}
+
+template <typename T>
+ALWAYS_INLINE static
 T Select(bool cond, T if_true, T if_false) {
   return cond ? if_true : if_false;
 }
@@ -1187,25 +1414,27 @@ MAKE_BUILTIN(CountTrailingZeros, 64, 64, __builtin_ctzll, 0)
 ALWAYS_INLINE static
 int16_t Float64ToInt16(float64_t val) {
   auto max_int = Float64(Maximize(Int16(0)));
-  return Select(FCmpLt(max_int, FAbs(val)), 0x8000_s16, Int16(val));
+  return Select<int16_t>(FCmpLt(max_int, FAbs(val)), Int16(0x8000), Int16(val));
 }
 
 ALWAYS_INLINE static
 int32_t Float64ToInt32(float64_t val) {
   auto max_int = Float64(Maximize(Int32(0)));
-  return Select(FCmpLt(max_int, FAbs(val)), 0x80000000_s32, Int32(val));
+  return Select<int32_t>(FCmpLt(max_int, FAbs(val)),
+                         Int32(0x80000000), Int32(val));
 }
 
 ALWAYS_INLINE static
 int16_t Float32ToInt16(float32_t val) {
   auto max_int = Float32(Maximize(Int32(0)));
-  return Select(FCmpLt(max_int, FAbs(val)), 0x8000_s16, Int16(val));
+  return Select<int16_t>(FCmpLt(max_int, FAbs(val)), Int16(0x8000), Int16(val));
 }
 
 ALWAYS_INLINE static
 int32_t Float32ToInt32(float32_t val) {
   auto max_int = Float32(Maximize(Int32(0)));
-  return Select(FCmpLt(max_int, FAbs(val)), 0x80000000_s32, Int32(val));
+  return Select<int32_t>(FCmpLt(max_int, FAbs(val)),
+                         Int32(0x80000000), Int32(val));
 }
 
 ALWAYS_INLINE static
@@ -1216,7 +1445,8 @@ int64_t Float32ToInt64(float32_t val) {
 ALWAYS_INLINE static
 int64_t Float64ToInt64(float64_t val) {
   auto max_int = Float64(Maximize(Int64(0)));
-  return Select(FCmpLt(max_int, FAbs(val)), 0x8000000000000000_s64, Int64(val));
+  return Select<int64_t>(FCmpLt(max_int, FAbs(val)),
+                         Int64(0x8000000000000000LL), Int64(val));
 }
 
 ALWAYS_INLINE static

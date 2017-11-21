@@ -1,4 +1,18 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_X86_SEMANTICS_POP_H_
 #define REMILL_ARCH_X86_SEMANTICS_POP_H_
@@ -114,7 +128,9 @@ DEF_ISEL(POP_GPRv_8F_16) = POP<R16W>;
 DEF_ISEL_R32or64W(POP_GPRv_8F, POP);
 
 DEF_ISEL(POP_GPRv_51_16) = POP<R16W>;
+DEF_ISEL(POP_GPRv_58_16) = POP<R16W>;
 DEF_ISEL_R32or64W(POP_GPRv_51, POP);
+DEF_ISEL_R32or64W(POP_GPRv_58, POP);
 
 DEF_ISEL(POP_MEMv_16) = POP<M16W>;
 DEF_ISEL_M32or64W(POP_MEMv, POP);
@@ -133,12 +149,90 @@ DEF_ISEL(POPFD) = DoPOPFD;
 DEF_ISEL(POPFQ) = DoPOPFQ;
 #endif  // 32 == ADDRESS_SIZE_BITS
 
-/*
-1391 POP POP_ES POP BASE I86 ATTRIBUTES: FIXED_BASE0 NOTSX SCALABLE STACKPOP0
-1392 POP POP_SS POP BASE I86 ATTRIBUTES: FIXED_BASE0 NOTSX SCALABLE STACKPOP0
-1393 POP POP_DS POP BASE I86 ATTRIBUTES: FIXED_BASE0 NOTSX SCALABLE STACKPOP0
-1395 POP POP_FS POP BASE I86 ATTRIBUTES: FIXED_BASE0 NOTSX SCALABLE STACKPOP0
-1396 POP POP_GS POP BASE I86 ATTRIBUTES: FIXED_BASE0 NOTSX SCALABLE STACKPOP0
- */
+namespace {
+
+template <typename T>
+DEF_SEM(POP_ES, R16W dst) {
+  addr_t addr_size = static_cast<addr_t>(sizeof(T));
+  addr_t stack_ptr = Read(REG_XSP);
+  Write(dst, TruncTo<uint16_t>(Read(ReadPtr<T>(stack_ptr))));
+  Write(REG_XSP, UAdd(stack_ptr, addr_size));
+  return __remill_sync_hyper_call(
+      state, memory, SyncHyperCall::kX86SetSegmentES);
+}
+
+template <typename T>
+DEF_SEM(POP_SS, R16W dst) {
+  addr_t addr_size = static_cast<addr_t>(sizeof(T));
+  addr_t stack_ptr = Read(REG_XSP);
+  Write(dst, TruncTo<uint16_t>(Read(ReadPtr<T>(stack_ptr))));
+  Write(REG_XSP, UAdd(stack_ptr, addr_size));
+  return __remill_sync_hyper_call(
+      state, memory, SyncHyperCall::kX86SetSegmentSS);
+}
+
+template <typename T>
+DEF_SEM(POP_DS, R16W dst) {
+  addr_t addr_size = static_cast<addr_t>(sizeof(T));
+  addr_t stack_ptr = Read(REG_XSP);
+  Write(dst, TruncTo<uint16_t>(Read(ReadPtr<T>(stack_ptr))));
+  Write(REG_XSP, UAdd(stack_ptr, addr_size));
+  return __remill_sync_hyper_call(
+      state, memory, SyncHyperCall::kX86SetSegmentDS);
+}
+
+template <typename T>
+DEF_SEM(POP_FS, R16W dst) {
+  addr_t addr_size = static_cast<addr_t>(sizeof(T));
+  addr_t stack_ptr = Read(REG_XSP);
+  Write(dst, TruncTo<uint16_t>(Read(ReadPtr<T>(stack_ptr))));
+  Write(REG_XSP, UAdd(stack_ptr, addr_size));
+  return __remill_sync_hyper_call(
+      state, memory, SyncHyperCall::kX86SetSegmentFS);
+}
+
+template <typename T>
+DEF_SEM(POP_GS, R16W dst) {
+  addr_t addr_size = static_cast<addr_t>(sizeof(T));
+  addr_t stack_ptr = Read(REG_XSP);
+  Write(dst, TruncTo<uint16_t>(Read(ReadPtr<T>(stack_ptr))));
+  Write(REG_XSP, UAdd(stack_ptr, addr_size));
+  return __remill_sync_hyper_call(
+      state, memory, SyncHyperCall::kX86SetSegmentGS);
+}
+
+}  // namespace
+
+#if 32 == ADDRESS_SIZE_BITS
+DEF_ISEL(POP_ES_16) = POP_ES<uint16_t>;
+DEF_ISEL(POP_ES_32) = POP_ES<uint32_t>;
+
+DEF_ISEL(POP_SS_16) = POP_SS<uint16_t>;
+DEF_ISEL(POP_SS_32) = POP_SS<uint32_t>;
+
+DEF_ISEL(POP_DS_16) = POP_DS<uint16_t>;
+DEF_ISEL(POP_DS_32) = POP_DS<uint32_t>;
+
+DEF_ISEL(POP_FS_16) = POP_FS<uint16_t>;
+DEF_ISEL(POP_FS_32) = POP_FS<uint32_t>;
+
+DEF_ISEL(POP_GS_16) = POP_GS<uint16_t>;
+DEF_ISEL(POP_GS_32) = POP_GS<uint32_t>;
+#else
+DEF_ISEL(POP_ES_16) = POP_ES<uint16_t>;
+DEF_ISEL(POP_ES_64) = POP_ES<uint64_t>;
+
+DEF_ISEL(POP_SS_16) = POP_SS<uint16_t>;
+DEF_ISEL(POP_SS_64) = POP_SS<uint64_t>;
+
+DEF_ISEL(POP_DS_16) = POP_DS<uint16_t>;
+DEF_ISEL(POP_DS_64) = POP_DS<uint64_t>;
+
+DEF_ISEL(POP_FS_16) = POP_FS<uint16_t>;
+DEF_ISEL(POP_FS_64) = POP_FS<uint64_t>;
+
+DEF_ISEL(POP_GS_16) = POP_GS<uint16_t>;
+DEF_ISEL(POP_GS_64) = POP_GS<uint64_t>;
+#endif  // 64 == ADDRESS_SIZE_BITS
 
 #endif  // REMILL_ARCH_X86_SEMANTICS_POP_H_

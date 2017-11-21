@@ -1,4 +1,18 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_X86_SEMANTICS_BINARY_H_
 #define REMILL_ARCH_X86_SEMANTICS_BINARY_H_
@@ -557,10 +571,10 @@ IF_AVX(DEF_ISEL(VDIVPD_XMMdq_XMMdq_XMMdq) = DIVPD<VV128W, VV128, VV128>;)
 IF_AVX(DEF_ISEL(VDIVPD_YMMqq_YMMqq_MEMqq) = DIVPD<VV256W, VV256, MV256>;)
 IF_AVX(DEF_ISEL(VDIVPD_YMMqq_YMMqq_YMMqq) = DIVPD<VV256W, VV256, VV256>;)
 
-DEF_ISEL(DIVSS_XMMss_MEMss) = DIVSD<V128W, V128, MV128>;
-DEF_ISEL(DIVSS_XMMss_XMMss) = DIVSD<V128W, V128, V128>;
-IF_AVX(DEF_ISEL(VDIVSS_XMMdq_XMMdq_MEMd) = DIVSD<VV128W, VV128, MV128>;)
-IF_AVX(DEF_ISEL(VDIVSS_XMMdq_XMMdq_XMMd) = DIVSD<VV128W, VV128, VV128>;)
+DEF_ISEL(DIVSS_XMMss_MEMss) = DIVSS<V128W, V128, MV128>;
+DEF_ISEL(DIVSS_XMMss_XMMss) = DIVSS<V128W, V128, V128>;
+IF_AVX(DEF_ISEL(VDIVSS_XMMdq_XMMdq_MEMd) = DIVSS<VV128W, VV128, MV128>;)
+IF_AVX(DEF_ISEL(VDIVSS_XMMdq_XMMdq_XMMd) = DIVSS<VV128W, VV128, VV128>;)
 
 DEF_ISEL(DIVSD_XMMsd_MEMsd) = DIVSD<V128W, V128, MV128>;
 DEF_ISEL(DIVSD_XMMsd_XMMsd) = DIVSD<V128W, V128, V128>;

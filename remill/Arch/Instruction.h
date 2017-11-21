@@ -1,4 +1,18 @@
-/* Copyright 2016 Peter Goodman (peter@trailofbits.com), all rights reserved. */
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef REMILL_ARCH_INSTRUCTION_H_
 #define REMILL_ARCH_INSTRUCTION_H_
@@ -9,7 +23,6 @@
 namespace remill {
 
 class Arch;
-class X86Arch;
 
 enum ArchName : unsigned;
 
@@ -22,6 +35,7 @@ class Operand {
   enum Type {
     kTypeInvalid,
     kTypeRegister,
+    kTypeShiftRegister,
     kTypeImmediate,
     kTypeAddress
   } type;
@@ -33,7 +47,7 @@ class Operand {
   } action;
 
   // Size of this operand, in bits.
-  size_t size;
+  uint64_t size;
 
   // kTypeRegister.
   class Register {
@@ -42,8 +56,34 @@ class Operand {
     ~Register(void) = default;
 
     std::string name;
-    size_t size;
+    uint64_t size;  // In bits.
   } reg;
+
+  class ShiftRegister {
+   public:
+    ShiftRegister(void);
+
+    Register reg;
+    uint64_t shift_size;
+    uint64_t extract_size;
+
+    enum Shift : unsigned {
+      kShiftInvalid,
+      kShiftLeftWithZeroes,  // Shift left, filling low order bits with zero.
+      kShiftLeftWithOnes,  // Shift left, filling low order bits with one.
+      kShiftUnsignedRight,  // Also know as logical shift right.
+      kShiftSignedRight,  // Also know as arithmetic shift right.
+      kShiftLeftAround,  // Rotate left.
+      kShiftRightAround  // Rotate right.
+    } shift_op;
+
+    enum Extend : unsigned {
+      kExtendInvalid,
+      kExtendUnsigned,
+      kExtendSigned,
+    } extend_op;
+
+  } shift_reg;
 
   // kTypeImmediate.
   class Immediate {
@@ -57,6 +97,14 @@ class Operand {
 
   // kTypeAddress.
   struct Address {
+    enum Kind {
+      kInvalid,
+      kMemoryRead,
+      kMemoryWrite,
+      kAddressCalculation,
+      kControlFlowTarget
+    };
+
     Address(void);
     ~Address(void) = default;
 
@@ -64,23 +112,39 @@ class Operand {
     Register base_reg;
     Register index_reg;
     int64_t scale;
-    int64_t displacement;
-    uint64_t address_size;
+    int64_t displacement;  // In bytes.
+    uint64_t address_size;  // In bits.
+    Kind kind;
+
+    inline bool IsMemoryAccess(void) const {
+      return kMemoryRead == kind || kMemoryWrite == kind;
+    }
+
+    inline bool IsAddressCalculation(void) const {
+      return kAddressCalculation == kind;
+    }
+
+    inline bool IsControlFlowTarget(void) const {
+      return kControlFlowTarget == kind;
+    }
   } addr;
 
-  std::string Debug(void) const;
+  std::string Serialize(void) const;
 };
 
 // Generic instruction type.
 class Instruction {
  public:
   ~Instruction(void) = default;
+  Instruction(void);
+
+  void Reset(void);
 
   // Name of semantics function that implements this instruction.
   std::string function;
 
-  // The disassembly of this instruction.
-  std::string disassembly;
+  // The decoded bytes of the instruction.
+  std::string bytes;
 
   // Program counter for this instruction and the next instruction.
   uint64_t pc;
@@ -95,7 +159,7 @@ class Instruction {
   ArchName arch_name;
 
   // The effective size of the operand, in bits.
-  size_t operand_size;
+  uint64_t operand_size;
 
   // Does the instruction require the use of the `__remill_atomic_begin` and
   // `__remill_atomic_end`?
@@ -131,6 +195,35 @@ class Instruction {
     }
   }
 
+  inline bool IsDirectControlFlow(void) const {
+    switch (category) {
+      case kCategoryDirectFunctionCall:
+      case kCategoryDirectJump:
+      case kCategoryConditionalBranch:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  inline bool IsIndirectControlFlow(void) const {
+    switch (category) {
+      case kCategoryIndirectFunctionCall:
+      case kCategoryIndirectJump:
+      case kCategoryConditionalBranch:
+      case kCategoryAsyncHyperCall:
+      case kCategoryConditionalAsyncHyperCall:
+      case kCategoryFunctionReturn:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  inline bool IsConditionalBranch(void) const {
+    return kCategoryConditionalBranch == category;
+  }
+
   inline bool IsFunctionCall(void) const {
     switch (category) {
       case kCategoryDirectFunctionCall:
@@ -141,8 +234,12 @@ class Instruction {
     }
   }
 
+  inline bool IsFunctionReturn(void) const {
+    return kCategoryFunctionReturn == category;
+  }
+
   inline bool IsValid(void) const {
-    return kCategoryInvalid != category;
+    return kCategoryInvalid != category && kCategoryError != category;
   }
 
   // Length, in bytes, of the instruction.
@@ -153,14 +250,8 @@ class Instruction {
   inline bool IsNoOp(void) const {
     return kCategoryNoOp == category;
   }
-
- private:
-  friend class X86Arch;
-
-  Instruction(void);
 };
 
 }  // namespace remill
-
 
 #endif  // REMILL_ARCH_INSTRUCTION_H_

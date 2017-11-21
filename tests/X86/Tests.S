@@ -1,7 +1,18 @@
-/* Copyright 2015 Peter Goodman (peter@trailofbits.com), all rights reserved. */
-
-#ifndef TESTS_X86_TESTS_S_
-#define TESTS_X86_TESTS_S_
+/*
+ * Copyright (c) 2017 Trail of Bits, Inc.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 #ifndef ADDRESS_SIZE_BITS
 # define ADDRESS_SIZE_BITS 64
@@ -48,26 +59,26 @@
  *       one should use `TEST_BEGIN_32` or `TEST_BEGIN_64`.
  */
 #define TEST_BEGIN(instr_name, num_args) \
-    .file __FILE__ ; \
     .text ; \
     \
     .align 16 ; \
     .globl SYMBOL(FUNC_NAME(instr_name, num_args)) ; \
     \
 SYMBOL(FUNC_NAME(instr_name, num_args)): ; \
-    .data ; \
-    1: \
-    .asciz TO_STRING(FUNC_NAME(instr_name, num_args)) ; \
     \
     .section "__x86_test_table", "a" ; \
     .balign 128 ; \
-    2: \
+    1: \
     .quad 3f ; \
     .quad 6f ; \
-    .quad 1b ; \
+    .quad 2f ; \
     .quad 4f ; \
     .quad 5f ; \
     .quad num_args ; \
+    \
+    .rodata ; \
+    2: \
+    .asciz TO_STRING(FUNC_NAME(instr_name, num_args)) ; \
     \
     .text ; \
     3: \
@@ -151,7 +162,6 @@ SYMBOL(FUNC_NAME(instr_name, num_args)): ; \
 # define TEST_END_MEM_64 TEST_END_64
 #endif
 
-    .file __FILE__ ;
     .intel_syntax noprefix ;
 
 #ifndef IN_TEST_GENERATOR
@@ -162,7 +172,7 @@ SYMBOL(FUNC_NAME(instr_name, num_args)): ; \
     .extern SYMBOL(gStackSwitcher)
     .extern SYMBOL(gTestEnd)
     .extern SYMBOL(gStackSaveSlot)
-    .extern SYMBOL(gFPU)
+    .extern SYMBOL(gRflagsForTest)
 
     .data
     .align 16
@@ -237,6 +247,10 @@ SYMBOL(DoInvokeTestCase):
     SET_VEC(5)
     SET_VEC(6)
     SET_VEC(7)
+
+    /* Set the rflags to what we want them to be. */
+    push QWORD PTR [RIP + SYMBOL(gRflagsForTest)]
+    popfq
 
     xchg RSP, [RIP + SYMBOL(gStackSwitcher)]  /* Switch onto recording stack. */
 
@@ -319,18 +333,28 @@ SYMBOL(__x86_test_table_begin):
     .text
 
 /* For argument register and return register definitions. */
+
 #include "tests/X86/ABI.S"
+#include "tests/X86/MMX/INPUTS.S"
+
+/* Change to `0` and put new `#include`s above when making new tests to speed
+ * up compile and test times. */
+#if 1
 
 /* Bring in the data transfer tests. These basically HAVE to pass before
  * anything else can ;-)  */
+
 #include "tests/X86/DATAXFER/MOV.S"
 #include "tests/X86/DATAXFER/MOVAPD.S"
 #include "tests/X86/DATAXFER/MOVAPS.S"
 #include "tests/X86/DATAXFER/MOVD.S"
 #include "tests/X86/DATAXFER/MOVDQA.S"
 #include "tests/X86/DATAXFER/MOVDQU.S"
+#include "tests/X86/DATAXFER/MOVHPD.S"
+#include "tests/X86/DATAXFER/MOVHPS.S"
 #include "tests/X86/DATAXFER/MOVLPD.S"
 #include "tests/X86/DATAXFER/MOVLPS.S"
+#include "tests/X86/DATAXFER/MOVLHPS.S"
 #include "tests/X86/DATAXFER/MOVQ.S"
 #include "tests/X86/DATAXFER/MOVSD.S"
 #include "tests/X86/DATAXFER/MOVSS.S"
@@ -342,22 +366,8 @@ SYMBOL(__x86_test_table_begin):
 
 /* Bring in the rest of the semantic tests. */
 
-#include "tests/X86/MMX/INPUTS.S"
-#include "tests/X86/MMX/MISC.S"
-#include "tests/X86/MMX/PACKSS.S"
-#include "tests/X86/MMX/PADD.S"
-#include "tests/X86/MMX/PCMP.S"
-#include "tests/X86/MMX/PEXTR.S"
-#include "tests/X86/MMX/PINSRW.S"
-#include "tests/X86/MMX/PMOV.S"
-#include "tests/X86/MMX/PMUL.S"
-#include "tests/X86/MMX/PSADBW.S"
-#include "tests/X86/MMX/PSHUF.S"
-#include "tests/X86/MMX/PSIGN.S"
-#include "tests/X86/MMX/PSLL.S"
-#include "tests/X86/MMX/PSRL.S"
-#include "tests/X86/MMX/PSUB.S"
-#include "tests/X86/MMX/PUNPCK.S"
+
+#include "tests/X86/AVX/VZEROUPPER.S"
 
 #include "tests/X86/BINARY/ADC.S"
 #include "tests/X86/BINARY/ADD.S"
@@ -452,6 +462,22 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/MISC/LEAVE.S"
 #include "tests/X86/MISC/XLAT.S"
 
+#include "tests/X86/MMX/MISC.S"
+#include "tests/X86/MMX/PACKSS.S"
+#include "tests/X86/MMX/PADD.S"
+#include "tests/X86/MMX/PCMP.S"
+#include "tests/X86/MMX/PEXTR.S"
+#include "tests/X86/MMX/PINSRW.S"
+#include "tests/X86/MMX/PMOV.S"
+#include "tests/X86/MMX/PMUL.S"
+#include "tests/X86/MMX/PSADBW.S"
+#include "tests/X86/MMX/PSHUF.S"
+#include "tests/X86/MMX/PSIGN.S"
+#include "tests/X86/MMX/PSLL.S"
+#include "tests/X86/MMX/PSRL.S"
+#include "tests/X86/MMX/PSUB.S"
+#include "tests/X86/MMX/PUNPCK.S"
+
 #include "tests/X86/POP/POP.S"
 #include "tests/X86/POP/POPF.S"
 
@@ -479,9 +505,19 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/SSE/COMISS.S"
 #include "tests/X86/SSE/PCMPISTRI.S"
 #include "tests/X86/SSE/PSHUFD.S"
+#include "tests/X86/SSE/PSLLDQ.S"
 #include "tests/X86/SSE/PSRLDQ.S"
 #include "tests/X86/SSE/UCOMISD.S"
 #include "tests/X86/SSE/UCOMISS.S"
+#include "tests/X86/SSE/MINSS.S"
+#include "tests/X86/SSE/MINSD.S"
+#include "tests/X86/SSE/MAXSS.S"
+#include "tests/X86/SSE/MAXSD.S"
+#include "tests/X86/SSE/UNPCKLPD.S"
+#include "tests/X86/SSE/UNPCKLPS.S"
+#include "tests/X86/SSE/UNPCKHPD.S"
+#include "tests/X86/SSE/MOVDDUP.S"
+#include "tests/X86/SSE/SQRTSS.S"
 
 #include "tests/X86/STRINGOP/CMPS.S"
 #include "tests/X86/STRINGOP/LODS.S"
@@ -490,6 +526,7 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/STRINGOP/STOS.S"
 
 #include "tests/X86/X87/FADD.S"
+#include "tests/X86/X87/FCMOV.S"
 #include "tests/X86/X87/FCOM.S"
 #include "tests/X86/X87/FDIV.S"
 #include "tests/X86/X87/FLD.S"
@@ -500,13 +537,9 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/X87/FXCH.S"
 #include "tests/X86/X87/MISC.S"
 
+#endif
 
     /* Create a symbol that represents the end of the test information table. */
     .section "__x86_test_table", "a"
     .globl SYMBOL(__x86_test_table_end)
 SYMBOL(__x86_test_table_end):
-
-    /* Reset */
-    .att_syntax prefix
-
-#endif  /* TESTS_X86_TESTS_S_ */
