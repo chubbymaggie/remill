@@ -137,6 +137,19 @@ DEF_SEM(UDIV, D dst, S src1, S src2) {
 }
 
 template <typename D, typename S>
+DEF_SEM(SDIV, D dst, S src1, S src2) {
+  using T = typename BaseType<S>::BT;
+  auto lhs = Signed(Read(src1));
+  auto rhs = Signed(Read(src2));
+  if (!rhs) {
+    WriteZExt(dst, T(0));
+  } else {
+    WriteZExt(dst, Unsigned(SDiv(lhs, rhs)));
+  }
+  return memory;
+}
+
+template <typename D, typename S>
 DEF_SEM(MADD, D dst, S src1, S src2, S src3) {
   WriteZExt(dst, UAdd(Read(src3), UMul(Read(src1), Read(src2))));
   return memory;
@@ -158,6 +171,9 @@ DEF_ISEL(SMULH_64_DP_3SRC) = SMULH;
 
 DEF_ISEL(UDIV_32_DP_2SRC) = UDIV<R32W, R32>;
 DEF_ISEL(UDIV_64_DP_2SRC) = UDIV<R64W, R64>;
+
+DEF_ISEL(SDIV_32_DP_2SRC) = SDIV<R32W, R32>;
+DEF_ISEL(SDIV_64_DP_2SRC) = SDIV<R64W, R64>;
 
 DEF_ISEL(MADD_32A_DP_3SRC) = MADD<R32W, R32>;
 DEF_ISEL(MADD_64A_DP_3SRC) = MADD<R64W, R64>;
@@ -252,12 +268,58 @@ DEF_SEM(FMADD_S, V128W dst, V32 src1, V32 src2, V32 src3) {
   auto factor2 = FExtractV32(FReadV32(src2), 0);
   auto add = FExtractV32(FReadV32(src3), 0);
 
-  auto prod = CheckedFloatBinOp(state, FMul32, factor1, factor2);
-  auto res = CheckedFloatBinOp(state, FAdd32, prod, add);
+  auto old_underflow = state.sr.ufc;
 
-  // Sets underflow for 0x3fffffff, 0x1 but native doesn't
+  auto zero = __remill_fpu_exception_test_and_clear(0, FE_ALL_EXCEPT);
+  BarrierReorder();
+  auto prod = FMul32(factor1, factor2);
+  BarrierReorder();
+  auto except_mul = __remill_fpu_exception_test_and_clear(FE_ALL_EXCEPT, zero);
+  BarrierReorder();
+  auto res = FAdd32(prod, add);
+  BarrierReorder();
+  auto except_add =
+      __remill_fpu_exception_test_and_clear(FE_ALL_EXCEPT, except_mul);
+  SetFPSRStatusFlags(state, except_add);
+
+  // Sets underflow for 0x3fffffff, 0x1 but native doesn't.
+  if (state.sr.ufc && !old_underflow) {
+    if (IsDenormal(factor1) || IsDenormal(factor2) || IsDenormal(add)) {
+      state.sr.ufc = old_underflow;
+    }
+  }
 
   FWriteV32(dst, res);
+  return memory;
+}
+
+DEF_SEM(FMADD_D, V128W dst, V64 src1, V64 src2, V64 src3) {
+  auto factor1 = FExtractV64(FReadV64(src1), 0);
+  auto factor2 = FExtractV64(FReadV64(src2), 0);
+  auto add = FExtractV64(FReadV64(src3), 0);
+
+  auto old_underflow = state.sr.ufc;
+
+  auto zero = __remill_fpu_exception_test_and_clear(0, FE_ALL_EXCEPT);
+  BarrierReorder();
+  auto prod = FMul64(factor1, factor2);
+  BarrierReorder();
+  auto except_mul = __remill_fpu_exception_test_and_clear(FE_ALL_EXCEPT, zero);
+  BarrierReorder();
+  auto res = FAdd64(prod, add);
+  BarrierReorder();
+  auto except_add =
+      __remill_fpu_exception_test_and_clear(FE_ALL_EXCEPT, except_mul);
+  SetFPSRStatusFlags(state, except_add);
+
+  // Sets underflow for test case (0x3fffffffffffffff, 0x1) but native doesn't.
+  if (state.sr.ufc && !old_underflow) {
+    if (IsDenormal(factor1) || IsDenormal(factor2) || IsDenormal(add)) {
+      state.sr.ufc = old_underflow;
+    }
+  }
+
+  FWriteV64(dst, res);
   return memory;
 }
 
@@ -270,7 +332,7 @@ DEF_SEM(FDIV_Scalar64, V128W dst, V64 src1, V64 src2) {
 }
 
 template <typename S>
-void FCompare(State &state, S val1, S val2, bool signal=true) {
+void FCompare(State &state, S val1, S val2, bool signal = true) {
   // Set flags for operand == NAN
   if (std::isnan(val1) || std::isnan(val2)) {
     // result = '0011';
@@ -279,11 +341,11 @@ void FCompare(State &state, S val1, S val2, bool signal=true) {
     FLAG_C = 1;
     FLAG_V = 1;
 
-    if(signal) { 
-      state.fpsr.ioc = true; 
+    if (signal) {
+      state.sr.ioc = true;
     }
 
-  // Regular float compare
+    // Regular float compare
   } else {
     if (FCmpEq(val1, val2)) {
       // result = '0110';
@@ -323,6 +385,20 @@ DEF_SEM(FCMPE_SZ, V32 src1) {
   return memory;
 }
 
+DEF_SEM(FCMP_S, V32 src1, V32 src2) {
+  auto val1 = FExtractV32(FReadV32(src1), 0);
+  auto val2 = FExtractV32(FReadV32(src2), 0);
+  FCompare(state, val1, val2, false);
+  return memory;
+}
+
+DEF_SEM(FCMP_SZ, V32 src1) {
+  auto val1 = FExtractV32(FReadV32(src1), 0);
+  float32_t float_zero = 0.0;
+  FCompare(state, val1, float_zero, false);
+  return memory;
+}
+
 DEF_SEM(FCMPE_D, V64 src1, V64 src2) {
   auto val1 = FExtractV64(FReadV64(src1), 0);
   auto val2 = FExtractV64(FReadV64(src2), 0);
@@ -337,9 +413,16 @@ DEF_SEM(FCMPE_DZ, V64 src1) {
   return memory;
 }
 
-DEF_SEM(FCMP_DZ, V64 src1, I64 zero) {
+DEF_SEM(FCMP_D, V64 src1, V64 src2) {
   auto val1 = FExtractV64(FReadV64(src1), 0);
-  auto float_zero = static_cast<float64_t>(Read(zero));
+  auto val2 = FExtractV64(FReadV64(src2), 0);
+  FCompare(state, val1, val2, false);
+  return memory;
+}
+
+DEF_SEM(FCMP_DZ, V64 src1) {
+  auto val1 = FExtractV64(FReadV64(src1), 0);
+  float64_t float_zero = 0.0;
   FCompare(state, val1, float_zero, false);
   return memory;
 }
@@ -384,12 +467,10 @@ DEF_ISEL(FMUL_S_FLOATDP2) = FMUL_Scalar32;
 DEF_ISEL(FMUL_D_FLOATDP2) = FMUL_Scalar64;
 
 DEF_ISEL(FMADD_S_FLOATDP3) = FMADD_S;
-// DEF_ISEL(FMADD_D_FLOATDP3)
+DEF_ISEL(FMADD_D_FLOATDP3) = FMADD_D;
 
 DEF_ISEL(FDIV_S_FLOATDP2) = FDIV_Scalar32;
 DEF_ISEL(FDIV_D_FLOATDP2) = FDIV_Scalar64;
-
-DEF_ISEL(FCMP_DZ_FLOATCMP) = FCMP_DZ;
 
 DEF_ISEL(FABS_S_FLOATDP1) = FABS_S;
 DEF_ISEL(FABS_D_FLOATDP1) = FABS_D;
@@ -399,6 +480,11 @@ DEF_ISEL(FNEG_D_FLOATDP1) = FNEG_D;
 
 DEF_ISEL(FCMPE_S_FLOATCMP) = FCMPE_S;
 DEF_ISEL(FCMPE_SZ_FLOATCMP) = FCMPE_SZ;
+DEF_ISEL(FCMP_S_FLOATCMP) = FCMP_S;
+DEF_ISEL(FCMP_SZ_FLOATCMP) = FCMP_SZ;
 
 DEF_ISEL(FCMPE_D_FLOATCMP) = FCMPE_D;
 DEF_ISEL(FCMPE_DZ_FLOATCMP) = FCMPE_DZ;
+DEF_ISEL(FCMP_D_FLOATCMP) = FCMP_D;
+DEF_ISEL(FCMP_DZ_FLOATCMP) = FCMP_DZ;
+

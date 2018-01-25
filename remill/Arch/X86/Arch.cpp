@@ -46,7 +46,7 @@ static const xed_state_t kXEDState64 = {
 
 static bool Is64Bit(ArchName arch_name) {
   return kArchAMD64 == arch_name || kArchAMD64_AVX == arch_name ||
-         kArchAMD64_AVX == arch_name;
+         kArchAMD64_AVX512 == arch_name;
 }
 
 static bool IsFunctionReturn(const xed_decoded_inst_t *xedd) {
@@ -135,13 +135,19 @@ static bool IsNoOp(const xed_decoded_inst_t *xedd) {
 
 static bool IsError(const xed_decoded_inst_t *xedd) {
   auto iclass = xed_decoded_inst_get_iclass(xedd);
-  return XED_ICLASS_HLT == iclass || XED_ICLASS_UD2 == iclass ||
-         XED_ICLASS_INVALID == iclass;
+  return XED_ICLASS_HLT == iclass || XED_ICLASS_UD2 == iclass;
+}
+
+static bool IsInvalid(const xed_decoded_inst_t *xedd) {
+  return XED_ICLASS_INVALID == xed_decoded_inst_get_iclass(xedd);
 }
 
 // Return the category of this instuction.
 static Instruction::Category CreateCategory(const xed_decoded_inst_t *xedd) {
-  if (IsError(xedd)) {
+  if (IsInvalid(xedd)) {
+    return Instruction::kCategoryInvalid;
+
+  } else if (IsError(xedd)) {
     return Instruction::kCategoryError;
 
   } else if (IsDirectJump(xedd)) {
@@ -255,7 +261,7 @@ std::map<xed_iform_enum_t, xed_iform_enum_t> kUnlockedIform = {
     {XED_IFORM_NEG_LOCK_MEMv, XED_IFORM_NEG_MEMv},
 };
 
-// Name of this instuction function.
+// Name of this instruction function.
 static std::string InstructionFunctionName(const xed_decoded_inst_t *xedd) {
 
   // If this instuction is marked as atomic via the `LOCK` prefix then we want
@@ -389,11 +395,6 @@ static void DecodeMemory(Instruction &inst,
     size = 16;
   }
 
-  // PC-relative memory accesses are relative to the next PC.
-  if (XED_REG_RIP == base_wide) {
-    disp += static_cast<int64_t>(inst_size);
-  }
-
   // Deduce the implicit segment register if it is absent.
   if (XED_REG_INVALID == segment) {
     segment = XED_REG_DS;
@@ -433,10 +434,11 @@ static void DecodeMemory(Instruction &inst,
   op.addr.scale = XED_REG_INVALID != index ? static_cast<int64_t>(scale) : 0;
   op.addr.displacement = disp;
 
-  // Rename the base register to use `PC` as the register name.
+  // PC-relative memory accesses are relative to the next PC. Rename the base
+  // register to use `PC` as the register name.
   if (XED_REG_RIP == base_wide) {
     op.addr.base_reg.name = "PC";
-    op.addr.displacement += static_cast<int64_t>(inst.NumBytes());
+    op.addr.displacement += static_cast<int64_t>(inst_size);
   }
 
   // We always pass destination operands first, then sources. Memory operands
@@ -745,18 +747,31 @@ class X86Arch : public Arch {
   // Decode an instuction.
   bool DecodeInstruction(
       uint64_t address, const std::string &inst_bytes,
-      Instruction &inst) const override;
+      Instruction &inst) const final;
+
+  // Fully decode any control-flow transfer instructions, but only partially
+  // decode other instructions. To complete the decoding, call
+  // `Instruction::FinalizeDecode`.
+  bool LazyDecodeInstruction(
+      uint64_t address, const std::string &inst_bytes,
+      Instruction &inst) const final;
 
   // Maximum number of bytes in an instruction.
-  uint64_t MaxInstructionSize(void) const override;
+  uint64_t MaxInstructionSize(void) const final;
 
-  llvm::Triple Triple(void) const override;
-  llvm::DataLayout DataLayout(void) const override;
+  llvm::Triple Triple(void) const final;
+  llvm::DataLayout DataLayout(void) const final;
 
   // Default calling convention for this architecture.
-  llvm::CallingConv::ID DefaultCallingConv(void) const override;
+  llvm::CallingConv::ID DefaultCallingConv(void) const final;
 
  private:
+
+  // Decode an instuction.
+  bool DecodeInstruction(
+      uint64_t address, const std::string &inst_bytes,
+      Instruction &inst, bool is_lazy) const;
+
   X86Arch(void) = delete;
 };
 
@@ -876,14 +891,12 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
         case kArchAMD64:
         case kArchAMD64_AVX:
         case kArchAMD64_AVX512:
-          dl = "e-m:e-i64:64-f80:128-n8:16:32:64-S128";
+          dl = "e-m:w-i64:64-f80:128-n8:16:32:64-S128";
           break;
         case kArchX86:
         case kArchX86_AVX:
         case kArchX86_AVX512:
-          dl = "e-p:32:32:32-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:"
-               "32:32-f64:64:64-f80:128:128-v64:64:64-v128:128:128-a0:0:64-f80:"
-               "32:32-n8:16:32-S32";
+          dl = "e-m:x-p:32:32-i64:64-f80:32-n8:16:32-a:0:32-S32";
           break;
         default:
           LOG(FATAL)
@@ -900,7 +913,7 @@ llvm::DataLayout X86Arch::DataLayout(void) const {
 bool X86Arch::DecodeInstruction(
     uint64_t address,
     const std::string &inst_bytes,
-    Instruction &inst) const {
+    Instruction &inst, bool is_lazy) const {
 
   inst.pc = address;
   inst.arch_name = arch_name;
@@ -911,19 +924,20 @@ bool X86Arch::DecodeInstruction(
   auto mode = 32 == address_size ? &kXEDState32 : &kXEDState64;
 
   if (!DecodeXED(xedd, mode, inst_bytes, address)) {
+    LOG(ERROR) << "DecodeXED() could not decode the following opcodes: " << inst.Serialize();
     return false;
   }
 
   inst.operand_size = xed_decoded_inst_get_operand_width(xedd);
-  inst.function = InstructionFunctionName(xedd);
   inst.bytes = inst_bytes.substr(0, xed_decoded_inst_get_length(xedd));
   inst.category = CreateCategory(xedd);
   inst.next_pc = address + xed_decoded_inst_get_length(xedd);
 
-  // Wrap an instuction in atomic begin/end if it accesses memory with RMW
+  // Wrap an instruction in atomic begin/end if it accesses memory with RMW
   // semantics or with a LOCK prefix.
   if (xed_operand_values_get_atomic(xedd) ||
-      xed_operand_values_has_lock_prefix(xedd)) {
+      xed_operand_values_has_lock_prefix(xedd) ||
+      XED_CATEGORY_SEMAPHORE == xed_decoded_inst_get_category(xedd)) {
     inst.is_atomic_read_modify_write = true;
   }
 
@@ -931,73 +945,179 @@ bool X86Arch::DecodeInstruction(
     DecodeConditionalInterrupt(inst);
   }
 
-  // Lift the operands. This creates the arguments for us to call the
-  // instuction implementation.
-  auto xedi = xed_decoded_inst_inst(xedd);
-  auto num_operands = xed_decoded_inst_noperands(xedd);
-  for (auto i = 0U; i < num_operands; ++i) {
-    auto xedo = xed_inst_operand(xedi, i);
-    if (XED_OPVIS_SUPPRESSED != xed_operand_operand_visibility(xedo)) {
-      DecodeOperand(inst, xedd, xedo);
-    }
-  }
+  auto iform = xed_decoded_inst_get_iform_enum(xedd);
 
-  if (inst.IsFunctionCall()) {
-    DecodeFallThroughPC(inst, xedd);
-  }
+  if (!is_lazy || inst.IsControlFlow()) {
+    inst.function = InstructionFunctionName(xedd);
 
-  // All non-control FPU instructions update the last instruction pointer
-  // and opcode.
-  if (XED_ISA_SET_X87 == xed_decoded_inst_get_isa_set(xedd) ||
-      XED_ISA_SET_FCMOV == xed_decoded_inst_get_isa_set(xedd) ||
-      XED_CATEGORY_X87_ALU == xed_decoded_inst_get_category(xedd)) {
-    auto set_ip_dp = false;
-    const auto get_attr = xed_decoded_inst_get_attribute;
-    switch (xed_decoded_inst_get_iform_enum(xedd)) {
-      case XED_IFORM_FNOP:
-      case XED_IFORM_FINCSTP:
-      case XED_IFORM_FDECSTP:
-        set_ip_dp = true;
-        break;
-      default:
-        set_ip_dp = !get_attr(xedd, XED_ATTRIBUTE_X87_CONTROL) &&
-                    !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_CW) &&
-                    !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_R) &&
-                    !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_W) &&
-                    !get_attr(xedd, XED_ATTRIBUTE_X87_NOWAIT);
-        break;
+    // Lift the operands. This creates the arguments for us to call the
+    // instuction implementation.
+    auto xedi = xed_decoded_inst_inst(xedd);
+    auto num_operands = xed_decoded_inst_noperands(xedd);
+    for (auto i = 0U; i < num_operands; ++i) {
+      auto xedo = xed_inst_operand(xedi, i);
+      if (XED_OPVIS_SUPPRESSED != xed_operand_operand_visibility(xedo)) {
+        DecodeOperand(inst, xedd, xedo);
+      }
     }
 
-    if (set_ip_dp) {
-      DecodeX87LastIpDp(inst);
+    if (inst.IsFunctionCall()) {
+      DecodeFallThroughPC(inst, xedd);
+    }
+
+    // All non-control FPU instructions update the last instruction pointer
+    // and opcode.
+    if (XED_ISA_SET_X87 == xed_decoded_inst_get_isa_set(xedd) ||
+        XED_ISA_SET_FCMOV == xed_decoded_inst_get_isa_set(xedd) ||
+        XED_CATEGORY_X87_ALU == xed_decoded_inst_get_category(xedd)) {
+      auto set_ip_dp = false;
+      const auto get_attr = xed_decoded_inst_get_attribute;
+      switch (iform) {
+        case XED_IFORM_FNOP:
+        case XED_IFORM_FINCSTP:
+        case XED_IFORM_FDECSTP:
+        case XED_IFORM_FFREE_X87:
+        case XED_IFORM_FFREEP_X87:
+          set_ip_dp = true;
+          break;
+        default:
+          set_ip_dp = !get_attr(xedd, XED_ATTRIBUTE_X87_CONTROL) &&
+                      !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_CW) &&
+                      !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_R) &&
+                      !get_attr(xedd, XED_ATTRIBUTE_X87_MMX_STATE_W) &&
+                      !get_attr(xedd, XED_ATTRIBUTE_X87_NOWAIT);
+          break;
+      }
+
+      if (set_ip_dp) {
+        DecodeX87LastIpDp(inst);
+      }
+    }
+
+    if (xed_decoded_inst_is_xacquire(xedd) ||
+        xed_decoded_inst_is_xrelease(xedd)) {
+      LOG(ERROR)
+          << "Ignoring XACQUIRE/XRELEASE prefix at " << std::hex
+          << inst.pc << std::dec;
     }
   }
 
   // Make sure we disallow decoding of AVX instructions when running with non-
   // AVX arch specified. Same thing for AVX512 instructions.
-  switch (xed_decoded_inst_get_category(xedd)) {
-    case XED_CATEGORY_INVALID:
-    case XED_CATEGORY_LAST:
+  switch (xed_decoded_inst_get_isa_set(xedd)) {
+    case XED_ISA_SET_INVALID:
+    case XED_ISA_SET_LAST:
+      LOG(ERROR)
+          << "Instruction decode of " << xed_iform_enum_t2str(iform)
+          << " failed because XED_ISA_SET_LAST.";
       return false;
 
-    case XED_CATEGORY_AVX:
-    case XED_CATEGORY_AVX2:
-    case XED_CATEGORY_AVX2GATHER:
-      return kArchAMD64 != inst.arch_name &&
-             kArchX86 != inst.arch_name;
+    case XED_ISA_SET_AVX:
+    case XED_ISA_SET_AVX2:
+    case XED_ISA_SET_AVX2GATHER:
+    case XED_ISA_SET_AVXAES:
+    case XED_ISA_SET_AVX_GFNI: {
+      auto supp = kArchAMD64 != inst.arch_name &&
+                  kArchX86 != inst.arch_name;
+      LOG_IF(ERROR, !supp)
+          << "Instruction decode of " << xed_iform_enum_t2str(iform)
+          << " failed because the current arch is specified "
+          << "as " << GetArchName(inst.arch_name) << " but what is needed is "
+          << "the _avx or _avx512 variant.";
+      return supp;
+    }
 
-    case XED_CATEGORY_AVX512:
-    case XED_CATEGORY_AVX512_4FMAPS:
-    case XED_CATEGORY_AVX512_4VNNIW:
-    case XED_CATEGORY_AVX512_VBMI:
-      return kArchAMD64_AVX512 == inst.arch_name ||
-             kArchX86_AVX512 == inst.arch_name;
-
+    case XED_ISA_SET_AVX512BW_128:
+    case XED_ISA_SET_AVX512BW_128N:
+    case XED_ISA_SET_AVX512BW_256:
+    case XED_ISA_SET_AVX512BW_512:
+    case XED_ISA_SET_AVX512BW_KOP:
+    case XED_ISA_SET_AVX512CD_128:
+    case XED_ISA_SET_AVX512CD_256:
+    case XED_ISA_SET_AVX512CD_512:
+    case XED_ISA_SET_AVX512DQ_128:
+    case XED_ISA_SET_AVX512DQ_128N:
+    case XED_ISA_SET_AVX512DQ_256:
+    case XED_ISA_SET_AVX512DQ_512:
+    case XED_ISA_SET_AVX512DQ_KOP:
+    case XED_ISA_SET_AVX512DQ_SCALAR:
+    case XED_ISA_SET_AVX512ER_512:
+    case XED_ISA_SET_AVX512ER_SCALAR:
+    case XED_ISA_SET_AVX512F_128:
+    case XED_ISA_SET_AVX512F_128N:
+    case XED_ISA_SET_AVX512F_256:
+    case XED_ISA_SET_AVX512F_512:
+    case XED_ISA_SET_AVX512F_KOP:
+    case XED_ISA_SET_AVX512F_SCALAR:
+    case XED_ISA_SET_AVX512PF_512:
+    case XED_ISA_SET_AVX512_4FMAPS_512:
+    case XED_ISA_SET_AVX512_4FMAPS_SCALAR:
+    case XED_ISA_SET_AVX512_4VNNIW_512:
+    case XED_ISA_SET_AVX512_BITALG_128:
+    case XED_ISA_SET_AVX512_BITALG_256:
+    case XED_ISA_SET_AVX512_BITALG_512:
+    case XED_ISA_SET_AVX512_GFNI_128:
+    case XED_ISA_SET_AVX512_GFNI_256:
+    case XED_ISA_SET_AVX512_GFNI_512:
+    case XED_ISA_SET_AVX512_IFMA_128:
+    case XED_ISA_SET_AVX512_IFMA_256:
+    case XED_ISA_SET_AVX512_IFMA_512:
+    case XED_ISA_SET_AVX512_VAES_128:
+    case XED_ISA_SET_AVX512_VAES_256:
+    case XED_ISA_SET_AVX512_VAES_512:
+    case XED_ISA_SET_AVX512_VBMI2_128:
+    case XED_ISA_SET_AVX512_VBMI2_256:
+    case XED_ISA_SET_AVX512_VBMI2_512:
+    case XED_ISA_SET_AVX512_VBMI_128:
+    case XED_ISA_SET_AVX512_VBMI_256:
+    case XED_ISA_SET_AVX512_VBMI_512:
+    case XED_ISA_SET_AVX512_VNNI_128:
+    case XED_ISA_SET_AVX512_VNNI_256:
+    case XED_ISA_SET_AVX512_VNNI_512:
+    case XED_ISA_SET_AVX512_VPCLMULQDQ_128:
+    case XED_ISA_SET_AVX512_VPCLMULQDQ_256:
+    case XED_ISA_SET_AVX512_VPCLMULQDQ_512:
+    case XED_ISA_SET_AVX512_VPOPCNTDQ_128:
+    case XED_ISA_SET_AVX512_VPOPCNTDQ_256:
+    case XED_ISA_SET_AVX512_VPOPCNTDQ_512: {
+      auto supp = kArchAMD64_AVX512 == inst.arch_name ||
+                  kArchX86_AVX512 == inst.arch_name;
+      LOG_IF(ERROR, !supp)
+          << "Instruction decode of " << xed_iform_enum_t2str(iform)
+          << " failed because the current arch is specified "
+          << "as " << GetArchName(inst.arch_name) << " but what is needed is "
+          << "the _avx512 variant.";
+      return supp;
+    }
     default:
       return true;
   }
 
   return true;
+}
+
+bool X86Arch::DecodeInstruction(
+    uint64_t address,
+    const std::string &inst_bytes,
+    Instruction &inst) const {
+  inst.arch_for_decode = nullptr;
+  return DecodeInstruction(address, inst_bytes, inst, false);
+}
+
+// Fully decode any control-flow transfer instructions, but only partially
+// decode other instructions.
+bool X86Arch::LazyDecodeInstruction(
+    uint64_t address, const std::string &inst_bytes,
+    Instruction &inst) const {
+  inst.arch_for_decode = nullptr;
+  if (DecodeInstruction(address, inst_bytes, inst, true)) {
+    if (!inst.IsControlFlow()) {
+      inst.arch_for_decode = this;
+    }
+    return true;
+  } else {
+    return false;
+  }
 }
 
 }  // namespace

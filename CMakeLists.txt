@@ -15,6 +15,9 @@
 project(remill)
 cmake_minimum_required (VERSION 3.2)
 
+# Generate a compile commands JSON file.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # add the BC (bitcode) language definition
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/BCCompiler")
 
@@ -118,7 +121,7 @@ if (NOT WIN32)
 endif ()
 
 # warnings and compiler settings
-set(PROJECT_CXXWARNINGS "-Wall -Wextra -Wno-unused-parameter -Wno-c++98-compat -Wno-unreachable-code-return -Wno-nested-anon-types -Wno-extended-offsetof -Wno-gnu-anonymous-struct -Wno-gnu-designator -Wno-variadic-macros -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-statement-expression -Wno-return-type-c-linkage -Wno-c99-extensions -Wno-ignored-attributes -Wno-unused-local-typedef -Wno-unknown-pragmas")
+set(PROJECT_CXXWARNINGS "-Wall -Wextra -Wno-unused-parameter -Wno-c++98-compat -Wno-unreachable-code-return -Wno-nested-anon-types -Wno-extended-offsetof -Wgnu-alignof-expression -Wno-gnu-anonymous-struct -Wno-gnu-designator -Wno-variadic-macros -Wno-gnu-zero-variadic-macro-arguments -Wno-gnu-statement-expression -Wno-return-type-c-linkage -Wno-c99-extensions -Wno-ignored-attributes -Wno-unused-local-typedef -Wno-unknown-pragmas")
 set(PROJECT_CXXFLAGS "${PROJECT_CXXFLAGS} -Wno-unknown-warning-option ${PROJECT_CXXWARNINGS} -fPIC -fno-omit-frame-pointer -fvisibility-inlines-hidden -fno-exceptions -fno-asynchronous-unwind-tables -fno-rtti")
 
 # default build type
@@ -272,13 +275,19 @@ function (InstallExternalTarget target_name target_path install_directory instal
   )
 
   add_custom_target("${target_name}" ALL DEPENDS "${output_file_path}")
-  install(FILES "${output_file_path}" DESTINATION "${install_directory}")
+
+  install(FILES "${output_file_path}"
+    DESTINATION "${install_directory}"
+    PERMISSIONS OWNER_READ OWNER_EXECUTE
+                GROUP_READ GROUP_EXECUTE
+                WORLD_READ WORLD_EXECUTE
+  )
 endfunction ()
 
 set(INSTALLED_CLANG_NAME "remill-clang-${REMILL_LLVM_VERSION}")
 set(INSTALLED_LLVMLINK_NAME "remill-llvm-link-${REMILL_LLVM_VERSION}")
 
-if ("${LIBRARY_REPOSITORY_ROOT}" STREQUAL "")
+if ("${LIBRARY_REPOSITORY_ROOT}" STREQUAL "" OR NOT EXISTS "${LIBRARY_REPOSITORY_ROOT}/llvm")
   set(INSTALLED_LIBLLVM_NAME "libLLVM-${REMILL_LLVM_VERSION}.so")
 
   # system binaries are not built statically, so we need to fix the rpath
@@ -308,9 +317,6 @@ if ("${LIBRARY_REPOSITORY_ROOT}" STREQUAL "")
 
   InstallExternalTarget("ext_llvmlink" "${llvmlink_location}" "${CMAKE_INSTALL_PREFIX}/bin"
     "${INSTALLED_LLVMLINK_NAME}" "${CMAKE_INSTALL_PREFIX}/lib")
-
-  InstallExternalTarget("ext_libllvm" "${libllvm_location}" "${CMAKE_INSTALL_PREFIX}/lib"
-    "${INSTALLED_LIBLLVM_NAME}")
 
 else ()
   # The executable in our binary repository are statically built, meaning that we don't need

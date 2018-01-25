@@ -14,26 +14,11 @@
  * limitations under the License.
  */
 
-TEST_BEGIN(UCVTF_D32_FLOAT2INT, ucvtf_d0_w0, 1)
-TEST_INPUTS(
-    0,
-    1,
-    0x80000000,
-    0x7fffffff,
-    0xffffffff)
-    ucvtf d0, ARG1_32
-TEST_END
-
-TEST_BEGIN(UCVTF_D64_FLOAT2INT, ucvtf_d0_x0, 1)
-TEST_INPUTS(
-    0,
-    1,
-    0x80000000,
-    0x7fffffff,
-    0xffffffff,
-    0x8000000000000000,
-    0x7fffffffffffffff,
-    0xffffffffffffffff)
-    ucvtf d0, ARG1_64
+/* STLR  <Wt>, [<Xn|SP>{,#0}] */
+TEST_BEGIN(STLR_SL32_LDSTEXCL, stlr_sl32_ldstexcl, 1)
+TEST_INPUTS(0)
+    add x3, sp, #-256
+    ldp w5, w6, [x3]
+    stlr w5, [x3]
 TEST_END
 

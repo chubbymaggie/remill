@@ -366,7 +366,6 @@ SYMBOL(__x86_test_table_begin):
 
 /* Bring in the rest of the semantic tests. */
 
-
 #include "tests/X86/AVX/VZEROUPPER.S"
 
 #include "tests/X86/BINARY/ADC.S"
@@ -450,6 +449,11 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/CONVERT/CWD.S"
 #include "tests/X86/CONVERT/CWDE.S"
 
+/* used for DECIMAL tests */
+#include "tests/X86/DECIMAL/UTIL_FLAGS.S"
+#include "tests/X86/DECIMAL/AAS.S"
+#include "tests/X86/DECIMAL/DAA.S"
+
 #include "tests/X86/LOGICAL/AND.S"
 #include "tests/X86/LOGICAL/NOT.S"
 #include "tests/X86/LOGICAL/OR.S"
@@ -503,8 +507,10 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/SSE/CMPSS.S"
 #include "tests/X86/SSE/COMISD.S"
 #include "tests/X86/SSE/COMISS.S"
+#include "tests/X86/SSE/PACKUSWB.S"
 #include "tests/X86/SSE/PCMPISTRI.S"
 #include "tests/X86/SSE/PSHUFD.S"
+#include "tests/X86/SSE/PSHUFLW.S"
 #include "tests/X86/SSE/PSLLDQ.S"
 #include "tests/X86/SSE/PSRLDQ.S"
 #include "tests/X86/SSE/UCOMISD.S"
@@ -518,6 +524,7 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/SSE/UNPCKHPD.S"
 #include "tests/X86/SSE/MOVDDUP.S"
 #include "tests/X86/SSE/SQRTSS.S"
+#include "tests/X86/SSE/MXCSR.S"
 
 #include "tests/X86/STRINGOP/CMPS.S"
 #include "tests/X86/STRINGOP/LODS.S"
@@ -526,6 +533,8 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/STRINGOP/STOS.S"
 
 #include "tests/X86/X87/FADD.S"
+#include "tests/X86/X87/FBLD.S"
+#include "tests/X86/X87/FBSTP.S"
 #include "tests/X86/X87/FCMOV.S"
 #include "tests/X86/X87/FCOM.S"
 #include "tests/X86/X87/FDIV.S"
@@ -536,6 +545,10 @@ SYMBOL(__x86_test_table_begin):
 #include "tests/X86/X87/FUCOM.S"
 #include "tests/X86/X87/FXCH.S"
 #include "tests/X86/X87/MISC.S"
+#include "tests/X86/X87/FNINIT.S"
+
+#include "tests/X86/FMA/VFMADDSD.S"
+#include "tests/X86/FMA/VFMSUBSD.S"
 
 #endif
 

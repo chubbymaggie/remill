@@ -31,6 +31,7 @@ extern "C" {
 [[gnu::used]] Memory *__remill_basic_block(State &state, addr_t curr_pc,
                                            Memory *memory) {
   bool branch_taken = false;
+  addr_t monitor = 0;
 
   // Note: These variables MUST be defined for all architectures.
   auto &STATE = state;
@@ -43,6 +44,9 @@ extern "C" {
   // uses to be able to depend on the optimizer not eliminating `curr_pc`.
   PC = curr_pc;
   auto &WPC = state.gpr.pc.dword;
+
+  // This is to support load-linked/store-conditional operations.
+  auto &MONITOR = monitor;
 
   auto &W0 = state.gpr.x0.dword;
   auto &W1 = state.gpr.x1.dword;
@@ -344,8 +348,8 @@ extern "C" {
   auto &V30 = state.simd.v[30];
   auto &V31 = state.simd.v[31];
 
-  auto &TPIDR_EL0 = state.sr.tpidr_el0;
-  auto &TPIDRRO_EL0 = state.sr.tpidrro_el0;
+  auto &TPIDR_EL0 = state.sr.tpidr_el0.aword;
+  auto &TPIDRRO_EL0 = state.sr.tpidrro_el0.aword;
 
   // Lifted code will be placed here in clones versions of this function.
   return memory;

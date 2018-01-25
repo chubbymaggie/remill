@@ -154,6 +154,35 @@ DEF_SEM(REV64, R64W dst, R64 src) {
   return memory;
 }
 
+template <typename T, size_t n>
+ALWAYS_INLINE static T ReverseBits(T v) {
+  T rv = 0;
+  _Pragma("unroll")
+  for (size_t i = 0; i < n; ++i, v >>= 1) {
+    rv = (rv << T(1)) | (v & T(1));
+  }
+  return rv;
+}
+
+#if !__has_builtin(__builtin_bitreverse32)
+# define __builtin_bitreverse32(x) ReverseBits<uint32_t, 32>(x)
+#endif
+
+DEF_SEM(RBIT32, R32W dst, R32 src) {
+  WriteZExt(dst, __builtin_bitreverse32(Read(src)));
+  return memory;
+}
+
+
+#if !__has_builtin(__builtin_bitreverse64)
+# define __builtin_bitreverse64(x) ReverseBits<uint64_t, 64>(x)
+#endif
+
+DEF_SEM(RBIT64, R64W dst, R64 src) {
+  Write(dst, __builtin_bitreverse64(Read(src)));
+  return memory;
+}
+
 }  // namespace
 
 DEF_ISEL(REV16_32_DP_1SRC) = REV16_32;
@@ -162,5 +191,5 @@ DEF_ISEL(REV_32_DP_1SRC) = REV32_32;
 DEF_ISEL(REV32_64_DP_1SRC) = REV32_64;
 DEF_ISEL(REV_64_DP_1SRC) = REV64;
 
-DEF_ISEL(RBIT_32_DP_1SRC) = REV32_32;
-DEF_ISEL(RBIT_64_DP_1SRC) = REV64;
+DEF_ISEL(RBIT_32_DP_1SRC) = RBIT32;
+DEF_ISEL(RBIT_64_DP_1SRC) = RBIT64;

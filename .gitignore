@@ -20,6 +20,7 @@ CMakeLists.txt.user
 .idea
 cmake-build-debug
 cmake-build-release
+compile_commands.json
 
 bin/*
 lib/*
@@ -85,3 +86,6 @@ remill_disass.egg-info/*
 *.log
 obj-ia32/*
 obj-intel64/*
+
+# VIM
+*.swp

@@ -286,6 +286,67 @@ IF_AVX(DEF_ISEL(VPSHUFD_YMMqq_YMMqq_IMMb) = PSHUFD<VV256W, V256>;)
 
 namespace {
 
+template <typename D, typename S1>
+  DEF_SEM(PSHUFLW, D dst, S1 src1, I8 src2) {
+  // Source operand is packed with word (16-bit) integers to be shuffled,
+  // but src1 is also a vector of one or more 128-bit "lanes":
+  auto src_vec = UReadV128(src1);
+  auto src_words_vec = UReadV16(src1);
+  
+  // Dest operand is similar. DEST[MAXVL-1:128] will be unmodified:
+  auto dst_vec = UClearV16(UReadV16(dst));
+
+  // The same operation is done for each 128-bit "lane" of src1:
+  auto num_lanes = NumVectorElems(UReadV128(src1));
+
+  _Pragma("unroll")
+  for (std::size_t lane_index = 0, word_index = 0; lane_index < num_lanes; ++lane_index) {
+    auto lane = UExtractV128(src_vec, lane_index);
+    // Words will be shuffled in the order specified in a code in src2:
+    auto order = Read(src2);
+
+    // Shuffle the 4 words from the low 64-bits of the 128-bit lane:
+    _Pragma("unroll")
+    for (std::size_t word_count = 0; word_count < 4; ++word_count, ++word_index) {
+      auto sel = UAnd(order, 0x3_u8);
+      auto shift = UMul(sel, 16_u8);
+      order = UShr(order, 2_u8);
+      auto sel_val = UShr(lane, UInt128(shift));
+      dst_vec = UInsertV16(dst_vec, word_index, TruncTo<uint16_t>(sel_val));
+    }
+
+    // After shuffling the low 64-bits, the high 64-bits of the src1 lane is 
+    // copied to the high quadword of the corresponding destination lane:
+    _Pragma("unroll")
+    for (std::size_t word_count = 0; word_count < 4; ++word_count, ++word_index) {
+      dst_vec = UInsertV16(dst_vec, word_index, UExtractV16(src_words_vec, word_index));
+    }
+  }
+
+  UWriteV16(dst, dst_vec);
+  return memory;
+}
+
+} // namespace
+
+DEF_ISEL(PSHUFLW_XMMdq_MEMdq_IMMb) = PSHUFLW<V128W, MV128>;
+DEF_ISEL(PSHUFLW_XMMdq_XMMdq_IMMb) = PSHUFLW<V128W, V128>;
+IF_AVX(DEF_ISEL(VPSHUFLW_XMMdq_MEMdq_IMMb) = PSHUFLW<VV128W, MV128>;)
+IF_AVX(DEF_ISEL(VPSHUFLW_XMMdq_XMMdq_IMMb) = PSHUFLW<VV128W, V128>;)
+IF_AVX(DEF_ISEL(VPSHUFLW_YMMqq_MEMqq_IMMb) = PSHUFLW<VV256W, MV256>;)
+IF_AVX(DEF_ISEL(VPSHUFLW_YMMqq_YMMqq_IMMb) = PSHUFLW<VV256W, V256>;)
+
+/*
+4432 VPSHUFLW VPSHUFLW_XMMu16_MASKmskw_XMMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: MASKOP_EVEX 
+4433 VPSHUFLW VPSHUFLW_XMMu16_MASKmskw_MEMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX 
+4434 VPSHUFLW VPSHUFLW_YMMu16_MASKmskw_YMMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: MASKOP_EVEX 
+4435 VPSHUFLW VPSHUFLW_YMMu16_MASKmskw_MEMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX 
+4436 VPSHUFLW VPSHUFLW_ZMMu16_MASKmskw_ZMMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: MASKOP_EVEX 
+4437 VPSHUFLW VPSHUFLW_ZMMu16_MASKmskw_MEMu16_IMM8_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX 
+*/
+
+namespace {
+
 #define MAKE_PCMP(suffix, size, op) \
     template <typename D, typename S1, typename S2> \
     DEF_SEM(PCMP ## suffix, D dst, S1 src1, S2 src2) { \
@@ -1517,5 +1578,197 @@ IF_AVX(DEF_ISEL(VSQRTSS_XMMdq_XMMdq_XMMd) = VSQRTSS<VV128W, V128, V128>;)
 4317 VSQRTSS VSQRTSS_XMMf32_MASKmskw_XMMf32_XMMf32_AVX512 AVX512 AVX512EVEX AVX512F_SCALAR ATTRIBUTES: MASKOP_EVEX MXCSR SIMD_SCALAR 
 4318 VSQRTSS VSQRTSS_XMMf32_MASKmskw_XMMf32_MEMf32_AVX512 AVX512 AVX512EVEX AVX512F_SCALAR ATTRIBUTES: DISP8_SCALAR MASKOP_EVEX MEMORY_FAULT_SUPPRESSION MXCSR SIMD_SCALAR
 */
+
+namespace {
+
+template <typename D, typename S1, typename S2, typename PV>
+DEF_SEM(PACKUSWB, D dst, S1 src1, S2 src2) {
+  auto src1_vec = SReadV16(src1);
+  auto src2_vec = SReadV16(src2);
+
+  PV packed = {};
+  const auto num_elems = NumVectorElems(packed);
+  const auto half_num_elems = num_elems / 2UL;
+
+  _Pragma("unroll")
+  for (size_t i = 0; i < half_num_elems; ++i) {
+    auto val = SExtractV16(src1_vec, i);
+    auto sat = std::max<int16_t>(std::min<int16_t>(val, 255), 0);
+    packed.elems[i] = static_cast<uint8_t>(sat);
+
+    auto val2 = SExtractV16(src2_vec, i);
+    auto sat2 = std::max<int16_t>(std::min<int16_t>(val2, 255), 0);
+    packed.elems[half_num_elems + i] = static_cast<uint8_t>(sat2);
+  }
+
+  UWriteV8(dst, packed);
+  return memory;
+}
+
+#if HAS_FEATURE_AVX
+
+template <typename D, typename S1, typename S2, typename PV>
+DEF_SEM(PACKUSWB_AVX, D dst, S1 src1, S2 src2) {
+  const auto src1_vec = SReadV16(src1);
+  const auto src2_vec = SReadV16(src2);
+  PV packed = {};
+
+  const auto num_elems = NumVectorElems(packed);
+  const auto half_num_elems = num_elems / 2UL;
+  const auto quarter_num_elems = num_elems / 4UL;
+
+  _Pragma("unroll")
+  for (size_t i = 0; i < quarter_num_elems; ++i) {
+    auto val = SExtractV16(src1_vec, i);
+    auto sat = std::max<int16_t>(std::min<int16_t>(val, 255), 0);
+    packed.elems[i] = static_cast<uint8_t>(sat);
+
+    auto val2 = SExtractV16(src1_vec, quarter_num_elems + i);
+    auto sat2 = std::max<int16_t>(std::min<int16_t>(val2, 255), 0);
+    packed.elems[half_num_elems + i] = static_cast<uint8_t>(sat2);
+
+    auto val3 = SExtractV16(src2_vec, i);
+    auto sat3 = std::max<int16_t>(std::min<int16_t>(val3, 255), 0);
+    packed.elems[quarter_num_elems + i] = static_cast<uint8_t>(sat3);
+
+    auto val4 = SExtractV16(src2_vec, quarter_num_elems + i);
+    auto sat4 = std::max<int16_t>(std::min<int16_t>(val4, 255), 0);
+    packed.elems[half_num_elems + quarter_num_elems + i] = \
+        static_cast<uint8_t>(sat4);
+  }
+
+  UWriteV8(dst, packed);
+  return memory;
+}
+
+#endif  // HAS_FEATURE_AVX
+
+}  // namespace
+
+DEF_ISEL(PACKUSWB_MMXq_MEMq) = PACKUSWB<V64W, V64, MV64, uint8v8_t>;
+DEF_ISEL(PACKUSWB_MMXq_MMXq) = PACKUSWB<V64W, V64, V64, uint8v8_t>;
+DEF_ISEL(PACKUSWB_XMMdq_MEMdq) = PACKUSWB<V128W, V128, MV128, uint8v16_t>;
+DEF_ISEL(PACKUSWB_XMMdq_XMMdq) = PACKUSWB<V128W, V128, V128, uint8v16_t>;
+IF_AVX(DEF_ISEL(VPACKUSWB_XMMdq_XMMdq_MEMdq) = PACKUSWB<VV256W, V128, MV128, uint8v16_t>;)
+IF_AVX(DEF_ISEL(VPACKUSWB_XMMdq_XMMdq_XMMdq) = PACKUSWB<VV256W, V128, V128, uint8v16_t>;)
+IF_AVX(DEF_ISEL(VPACKUSWB_YMMqq_YMMqq_MEMqq) = PACKUSWB_AVX<VV256W, V256, MV256, uint8v32_t>;)
+IF_AVX(DEF_ISEL(VPACKUSWB_YMMqq_YMMqq_YMMqq) = PACKUSWB_AVX<VV256W, V256, V256, uint8v32_t>;)
+
+/*
+555 PACKSSDW PACKSSDW_MMXq_MEMq MMX MMX PENTIUMMMX ATTRIBUTES: HALF_WIDE_OUTPUT NOTSX
+556 PACKSSDW PACKSSDW_MMXq_MMXq MMX MMX PENTIUMMMX ATTRIBUTES: HALF_WIDE_OUTPUT NOTSX
+557 PACKSSDW PACKSSDW_XMMdq_MEMdq SSE SSE2 SSE2 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+558 PACKSSDW PACKSSDW_XMMdq_XMMdq SSE SSE2 SSE2 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+750 PACKUSDW PACKUSDW_XMMdq_MEMdq SSE SSE4 SSE4 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+751 PACKUSDW PACKUSDW_XMMdq_XMMdq SSE SSE4 SSE4 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+1893 PACKSSWB PACKSSWB_MMXq_MEMq MMX MMX PENTIUMMMX ATTRIBUTES: HALF_WIDE_OUTPUT NOTSX
+1894 PACKSSWB PACKSSWB_MMXq_MMXq MMX MMX PENTIUMMMX ATTRIBUTES: HALF_WIDE_OUTPUT NOTSX
+1895 PACKSSWB PACKSSWB_XMMdq_MEMdq SSE SSE2 SSE2 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+1896 PACKSSWB PACKSSWB_XMMdq_XMMdq SSE SSE2 SSE2 ATTRIBUTES: HALF_WIDE_OUTPUT REQUIRES_ALIGNMENT
+2410 VPACKSSDW VPACKSSDW_XMMdq_XMMdq_MEMdq AVX AVX AVX ATTRIBUTES:
+2411 VPACKSSDW VPACKSSDW_XMMdq_XMMdq_XMMdq AVX AVX AVX ATTRIBUTES:
+2412 VPACKSSDW VPACKSSDW_YMMqq_YMMqq_MEMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+2413 VPACKSSDW VPACKSSDW_YMMqq_YMMqq_YMMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+
+3178 VPACKUSDW VPACKUSDW_XMMdq_XMMdq_MEMdq AVX AVX AVX ATTRIBUTES:
+3179 VPACKUSDW VPACKUSDW_XMMdq_XMMdq_XMMdq AVX AVX AVX ATTRIBUTES:
+3180 VPACKUSDW VPACKUSDW_YMMqq_YMMqq_MEMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+3181 VPACKUSDW VPACKUSDW_YMMqq_YMMqq_YMMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+3655 VPACKSSWB VPACKSSWB_XMMdq_XMMdq_MEMdq AVX AVX AVX ATTRIBUTES:
+3656 VPACKSSWB VPACKSSWB_XMMdq_XMMdq_XMMdq AVX AVX AVX ATTRIBUTES:
+3657 VPACKSSWB VPACKSSWB_YMMqq_YMMqq_MEMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+3658 VPACKSSWB VPACKSSWB_YMMqq_YMMqq_YMMqq AVX2 AVX2 AVX2 ATTRIBUTES:
+4267 VPACKSSDW VPACKSSDW_XMMi16_MASKmskw_XMMi32_XMMi32_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: MASKOP_EVEX
+4268 VPACKSSDW VPACKSSDW_XMMi16_MASKmskw_XMMi32_MEMi32_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+4269 VPACKSSDW VPACKSSDW_YMMi16_MASKmskw_YMMi32_YMMi32_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: MASKOP_EVEX
+4270 VPACKSSDW VPACKSSDW_YMMi16_MASKmskw_YMMi32_MEMi32_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+4271 VPACKSSDW VPACKSSDW_ZMMi16_MASKmskw_ZMMi32_ZMMi32_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: MASKOP_EVEX
+4272 VPACKSSDW VPACKSSDW_ZMMi16_MASKmskw_ZMMi32_MEMi32_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+4796 VPACKUSWB VPACKUSWB_XMMu8_MASKmskw_XMMu16_XMMu16_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: MASKOP_EVEX
+4797 VPACKUSWB VPACKUSWB_XMMu8_MASKmskw_XMMu16_MEMu16_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+4798 VPACKUSWB VPACKUSWB_YMMu8_MASKmskw_YMMu16_YMMu16_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: MASKOP_EVEX
+4799 VPACKUSWB VPACKUSWB_YMMu8_MASKmskw_YMMu16_MEMu16_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+4800 VPACKUSWB VPACKUSWB_ZMMu8_MASKmskw_ZMMu16_ZMMu16_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: MASKOP_EVEX
+4801 VPACKUSWB VPACKUSWB_ZMMu8_MASKmskw_ZMMu16_MEMu16_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+5536 VPACKUSDW VPACKUSDW_XMMu16_MASKmskw_XMMu32_XMMu32_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: MASKOP_EVEX
+5537 VPACKUSDW VPACKUSDW_XMMu16_MASKmskw_XMMu32_MEMu32_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+5538 VPACKUSDW VPACKUSDW_YMMu16_MASKmskw_YMMu32_YMMu32_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: MASKOP_EVEX
+5539 VPACKUSDW VPACKUSDW_YMMu16_MASKmskw_YMMu32_MEMu32_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+5540 VPACKUSDW VPACKUSDW_ZMMu16_MASKmskw_ZMMu32_ZMMu32_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: MASKOP_EVEX
+5541 VPACKUSDW VPACKUSDW_ZMMu16_MASKmskw_ZMMu32_MEMu32_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: BROADCAST_ENABLED DISP8_FULL MASKOP_EVEX
+6430 VPACKSSWB VPACKSSWB_XMMi8_MASKmskw_XMMi16_XMMi16_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: MASKOP_EVEX
+6431 VPACKSSWB VPACKSSWB_XMMi8_MASKmskw_XMMi16_MEMi16_AVX512 AVX512 AVX512EVEX AVX512BW_128 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+6432 VPACKSSWB VPACKSSWB_YMMi8_MASKmskw_YMMi16_YMMi16_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: MASKOP_EVEX
+6433 VPACKSSWB VPACKSSWB_YMMi8_MASKmskw_YMMi16_MEMi16_AVX512 AVX512 AVX512EVEX AVX512BW_256 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+6434 VPACKSSWB VPACKSSWB_ZMMi8_MASKmskw_ZMMi16_ZMMi16_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: MASKOP_EVEX
+6435 VPACKSSWB VPACKSSWB_ZMMi8_MASKmskw_ZMMi16_MEMi16_AVX512 AVX512 AVX512EVEX AVX512BW_512 ATTRIBUTES: DISP8_FULLMEM MASKOP_EVEX
+ */
+
+
+namespace {
+
+DEF_SEM(LDMXCSR, M32 src) {
+  auto &csr = state.x87.fxsave.mxcsr;
+  csr.flat = Read(src);
+
+  int rounding_mode = FE_TONEAREST;
+  
+  if (!csr.rp && !csr.rn) {
+    rounding_mode = FE_TONEAREST;
+  } 
+  else if (!csr.rp && csr.rn) {
+    rounding_mode = FE_DOWNWARD;
+  }
+  else if (csr.rp && !csr.rn) {
+    rounding_mode = FE_UPWARD;
+  }
+  else {
+    rounding_mode = FE_TOWARDZERO;
+  }
+  fesetround(rounding_mode);
+  
+  // TODO: set FPU precision based on MXCSR precision flag (csr.pe)
+  
+  return memory;
+}
+
+DEF_SEM(STMXCSR, M32W dst) {
+  auto &csr = state.x87.fxsave.mxcsr;
+  
+  // TODO: store the current FPU precision control:
+  csr.pe = 0;
+
+  // Store the current FPU rounding mode:
+  switch (fegetround()) {
+    default:
+    case FE_TONEAREST:
+      csr.rp = 0;
+      csr.rn = 0;
+      break;
+    case FE_DOWNWARD:
+      csr.rp = 0;
+      csr.rn = 1;
+      break;
+    case FE_UPWARD:
+      csr.rp = 1;
+      csr.rn = 0;
+      break;
+    case FE_TOWARDZERO:
+      csr.rp = 1;
+      csr.rn = 1;
+      break;
+  }
+
+  Write(dst, csr.flat);
+  
+  return memory;
+}
+
+} // namespace
+
+DEF_ISEL(LDMXCSR_MEMd) = LDMXCSR;
+DEF_ISEL(STMXCSR_MEMd) = STMXCSR;
+IF_AVX(DEF_ISEL(VLDMXCSR_MEMd) = LDMXCSR;)
+IF_AVX(DEF_ISEL(VSTMXCSR_MEMd) = STMXCSR;)
 
 #endif  // REMILL_ARCH_X86_SEMANTICS_SSE_H_
