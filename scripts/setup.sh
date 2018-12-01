@@ -35,7 +35,7 @@ SetupLinux() {
      git \
      cmake \
      python2.7 python-pip python-virtualenv \
-     wget \
+     curl \
      build-essential \
      gcc-multilib g++-multilib \
      libtinfo-dev \
@@ -68,7 +68,7 @@ SetupMaxOSX() {
 main() {
   # macOS packages.
   if [[ "$OSTYPE" == "darwin"* ]]; then
-    SetupLinux
+    SetupMaxOSX
     return $?
 
   # Linux

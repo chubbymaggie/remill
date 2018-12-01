@@ -14,8 +14,7 @@
  * limitations under the License.
  */
 
-#ifndef REMILL_ARCH_RUNTIME_INTRINSICS_H_
-#define REMILL_ARCH_RUNTIME_INTRINSICS_H_
+#pragma once
 
 #include "remill/Arch/Runtime/Types.h"
 #include "remill/Arch/Runtime/HyperCall.h"
@@ -248,6 +247,23 @@ extern Memory *__remill_fetch_and_nand_64(Memory *, addr_t addr, uint64_t &value
 [[gnu::used, gnu::const]]
 extern int __remill_fpu_exception_test_and_clear(int read_mask, int clear_mask);
 
-}  // extern C
+// Read/write to I/O ports.
+[[gnu::used, gnu::const]]
+extern uint8_t __remill_read_io_port_8(Memory *, addr_t);
 
-#endif  // REMILL_ARCH_RUNTIME_INTRINSICS_H_
+[[gnu::used, gnu::const]]
+extern uint16_t __remill_read_io_port_16(Memory *, addr_t);
+
+[[gnu::used, gnu::const]]
+extern uint32_t __remill_read_io_port_32(Memory *, addr_t);
+
+[[gnu::used, gnu::const]]
+extern Memory *__remill_write_io_port_8(Memory *, addr_t, uint8_t);
+
+[[gnu::used, gnu::const]]
+extern Memory *__remill_write_io_port_16(Memory *, addr_t, uint16_t);
+
+[[gnu::used, gnu::const]]
+extern Memory *__remill_write_io_port_32(Memory *, addr_t, uint32_t);
+
+}  // extern C
